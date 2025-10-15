@@ -3,6 +3,10 @@ import cors from 'cors';
 import dotenv from 'dotenv';
 import authRoutes from './routes/authRoutes.js';
 import superAdminRoutes from './routes/superAdminRoutes.js';
+import reservationsRoutes from './routes/reservationsRoutes.js';
+import customersRoutes from './routes/customersRoutes.js';
+import waitlistRoutes from './routes/waitlistRoutes.js';
+import analyticsRoutes from './routes/analyticsRoutes.js';
 
 dotenv.config();
 
@@ -22,6 +26,10 @@ app.get('/health', (req, res) => {
 // Rutas 
 app.use('/api/auth', authRoutes);
 app.use('/api/superadmin', superAdminRoutes);
+app.use('/api/reservations', reservationsRoutes);
+app.use('/api/customers', customersRoutes);
+app.use('/api/waitlist', waitlistRoutes);
+app.use('/api/analytics', analyticsRoutes);
 
 // Error handler
 app.use((err, req, res, next) => {
