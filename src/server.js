@@ -7,6 +7,7 @@ import reservationsRoutes from './routes/reservationsRoutes.js';
 import customersRoutes from './routes/customersRoutes.js';
 import waitlistRoutes from './routes/waitlistRoutes.js';
 import analyticsRoutes from './routes/analyticsRoutes.js';
+import webhooksRoutes from './routes/webhooksRoutes.js';
 
 dotenv.config();
 
@@ -30,6 +31,7 @@ app.use('/api/reservations', reservationsRoutes);
 app.use('/api/customers', customersRoutes);
 app.use('/api/waitlist', waitlistRoutes);
 app.use('/api/analytics', analyticsRoutes);
+app.use('/api/webhooks', webhooksRoutes);
 
 // Error handler
 app.use((err, req, res, next) => {
