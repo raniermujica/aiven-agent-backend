@@ -118,8 +118,8 @@ export async function createReservation(req, res) {
 
     // Validaciones
     if (!reservationDate || !reservationTime || !partySize) {
-      return res.status(400).json({ 
-        error: 'Fecha, hora y número de personas son requeridos' 
+      return res.status(400).json({
+        error: 'Fecha, hora y número de personas son requeridos'
       });
     }
 
@@ -128,8 +128,8 @@ export async function createReservation(req, res) {
 
     if (!finalCustomerId) {
       if (!customerName || !customerPhone) {
-        return res.status(400).json({ 
-          error: 'Nombre y teléfono del cliente son requeridos' 
+        return res.status(400).json({
+          error: 'Nombre y teléfono del cliente son requeridos'
         });
       }
 
@@ -213,12 +213,20 @@ export async function updateReservationStatus(req, res) {
     const { reservationId } = req.params;
     const { status } = req.body;
     const businessId = req.business.id;
+    const businessType = req.business.type; // ← AGREGAR ESTO
 
-    const validStatuses = ['pending', 'confirmed', 'seated', 'completed', 'cancelled', 'no_show'];
+    // Validar estados según tipo de negocio
+    let validStatuses = ['pending', 'confirmed', 'completed', 'cancelled', 'no_show'];
+
+    // Solo restaurantes pueden usar "seated"
+    if (businessType === 'restaurant') {
+      validStatuses.push('seated');
+    }
+
     if (!validStatuses.includes(status)) {
-      return res.status(400).json({ 
-        error: 'Estado inválido',
-        validStatuses 
+      return res.status(400).json({
+        error: 'Estado inválido para este tipo de negocio',
+        validStatuses
       });
     }
 
@@ -245,7 +253,7 @@ export async function updateReservationStatus(req, res) {
     // Si se marca como completed, guardar hora de check-out
     if (status === 'completed') {
       updates.checked_out_at = new Date().toISOString();
-      
+
       // Actualizar estadísticas del cliente
       await supabase.rpc('increment_customer_visits', {
         customer_id_input: reservation.customer_id
@@ -270,7 +278,7 @@ export async function updateReservationStatus(req, res) {
     console.error('Error en updateReservationStatus:', error);
     res.status(500).json({ error: 'Error en el servidor' });
   }
-}
+};
 
 export async function getReservationStats(req, res) {
   try {
