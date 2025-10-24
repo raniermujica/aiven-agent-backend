@@ -30,12 +30,10 @@ export async function getReservations(req, res) {
       .order('reservation_date', { ascending: true })
       .order('reservation_time', { ascending: true });
 
-    // Filtrar por fecha si se proporciona
     if (date) {
       query = query.eq('reservation_date', date);
     }
 
-    // Filtrar por estado si se proporciona
     if (status) {
       query = query.eq('status', status);
     }
@@ -58,7 +56,7 @@ export async function getReservations(req, res) {
 export async function getTodayReservations(req, res) {
   try {
     const businessId = req.business.id;
-    const today = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
+    const today = new Date().toISOString().split('T')[0];
 
     const { data, error } = await supabase
       .from('reservations')
@@ -116,24 +114,21 @@ export async function createReservation(req, res) {
       source = 'manual',
     } = req.body;
 
-    // Validaciones
     if (!reservationDate || !reservationTime || !partySize) {
-      return res.status(400).json({
-        error: 'Fecha, hora y número de personas son requeridos'
+      return res.status(400).json({ 
+        error: 'Fecha, hora y número de personas son requeridos' 
       });
     }
 
-    // Si no hay customerId, necesitamos crear el cliente
     let finalCustomerId = customerId;
 
     if (!finalCustomerId) {
       if (!customerName || !customerPhone) {
-        return res.status(400).json({
-          error: 'Nombre y teléfono del cliente son requeridos'
+        return res.status(400).json({ 
+          error: 'Nombre y teléfono del cliente son requeridos' 
         });
       }
 
-      // Buscar si el cliente ya existe por teléfono
       const { data: existingCustomer } = await supabase
         .from('customers')
         .select('id')
@@ -144,7 +139,6 @@ export async function createReservation(req, res) {
       if (existingCustomer) {
         finalCustomerId = existingCustomer.id;
       } else {
-        // Crear nuevo cliente
         const { data: newCustomer, error: customerError } = await supabase
           .from('customers')
           .insert({
@@ -166,7 +160,6 @@ export async function createReservation(req, res) {
       }
     }
 
-    // Crear la reserva
     const { data: reservation, error: reservationError } = await supabase
       .from('reservations')
       .insert({
@@ -213,24 +206,15 @@ export async function updateReservationStatus(req, res) {
     const { reservationId } = req.params;
     const { status } = req.body;
     const businessId = req.business.id;
-    const businessType = req.business.type; // ← AGREGAR ESTO
 
-    // Validar estados según tipo de negocio
-    let validStatuses = ['pending', 'confirmed', 'completed', 'cancelled', 'no_show'];
-
-    // Solo restaurantes pueden usar "seated"
-    if (businessType === 'restaurant') {
-      validStatuses.push('seated');
-    }
-
+    const validStatuses = ['pending', 'confirmed', 'seated', 'completed', 'cancelled', 'no_show'];
     if (!validStatuses.includes(status)) {
-      return res.status(400).json({
-        error: 'Estado inválido para este tipo de negocio',
-        validStatuses
+      return res.status(400).json({ 
+        error: 'Estado inválido',
+        validStatuses 
       });
     }
 
-    // Verificar que la reserva pertenezca al negocio
     const { data: reservation, error: checkError } = await supabase
       .from('reservations')
       .select('id, customer_id')
@@ -242,19 +226,15 @@ export async function updateReservationStatus(req, res) {
       return res.status(404).json({ error: 'Reserva no encontrada' });
     }
 
-    // Actualizar estado
     const updates = { status };
 
-    // Si se marca como seated, guardar hora de check-in
     if (status === 'seated') {
       updates.checked_in_at = new Date().toISOString();
     }
 
-    // Si se marca como completed, guardar hora de check-out
     if (status === 'completed') {
       updates.checked_out_at = new Date().toISOString();
-
-      // Actualizar estadísticas del cliente
+      
       await supabase.rpc('increment_customer_visits', {
         customer_id_input: reservation.customer_id
       });
@@ -278,17 +258,16 @@ export async function updateReservationStatus(req, res) {
     console.error('Error en updateReservationStatus:', error);
     res.status(500).json({ error: 'Error en el servidor' });
   }
-};
+}
 
 export async function getReservationStats(req, res) {
   try {
     const businessId = req.business.id;
     const today = new Date().toISOString().split('T')[0];
 
-    // Contar reservas de hoy por estado
     const { data: todayStats, error: todayError } = await supabase
       .from('reservations')
-      .select('status')
+      .select('status, party_size')
       .eq('restaurant_id', businessId)
       .eq('reservation_date', today);
 
@@ -297,7 +276,6 @@ export async function getReservationStats(req, res) {
       return res.status(500).json({ error: 'Error obteniendo estadísticas' });
     }
 
-    // Contar comensales de hoy
     const totalCovers = todayStats.reduce((sum, r) => sum + (r.party_size || 0), 0);
 
     const stats = {
@@ -317,6 +295,72 @@ export async function getReservationStats(req, res) {
 
   } catch (error) {
     console.error('Error en getReservationStats:', error);
+    res.status(500).json({ error: 'Error en el servidor' });
+  }
+}
+
+// NUEVA FUNCIÓN PARA EL CALENDARIO
+export async function getCalendarReservations(req, res) {
+  try {
+    const businessId = req.business.id;
+    const { startDate, endDate } = req.query;
+
+    if (!startDate || !endDate) {
+      return res.status(400).json({ 
+        error: 'Se requieren startDate y endDate' 
+      });
+    }
+
+    const { data: reservations, error } = await supabase
+      .from('reservations')
+      .select(`
+        *,
+        customers (
+          id,
+          name,
+          phone,
+          email,
+          is_vip
+        ),
+        services (
+          id,
+          name,
+          duration,
+          price
+        )
+      `)
+      .eq('restaurant_id', businessId)
+      .gte('reservation_date', startDate)
+      .lte('reservation_date', endDate)
+      .order('reservation_date', { ascending: true })
+      .order('reservation_time', { ascending: true });
+
+    if (error) {
+      console.error('Error obteniendo reservas del calendario:', error);
+      return res.status(500).json({ error: 'Error obteniendo reservas' });
+    }
+
+    const formattedReservations = reservations.map(res => ({
+      id: res.id,
+      customerName: res.customers?.name || 'Sin nombre',
+      customerPhone: res.customers?.phone || '',
+      isVip: res.customers?.is_vip || false,
+      service: res.services?.name || res.special_requests || 'Servicio',
+      date: res.reservation_date,
+      time: res.reservation_time.substring(0, 5),
+      duration: res.services?.duration || 60,
+      status: res.status,
+      partySize: res.party_size,
+      specialRequests: res.special_requests
+    }));
+
+    res.json({ 
+      reservations: formattedReservations,
+      count: formattedReservations.length 
+    });
+
+  } catch (error) {
+    console.error('Error en getCalendarReservations:', error);
     res.status(500).json({ error: 'Error en el servidor' });
   }
 };
