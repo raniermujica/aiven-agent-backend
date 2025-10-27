@@ -5,6 +5,7 @@ import authRoutes from './routes/authRoutes.js';
 import superAdminRoutes from './routes/superAdminRoutes.js';
 import reservationsRoutes from './routes/reservationsRoutes.js';
 import appointmentsRoutes from './routes/appointmentsRoutes.js';
+import servicesRoutes from './routes/servicesRoutes.js'; 
 import customersRoutes from './routes/customersRoutes.js';
 import waitlistRoutes from './routes/waitlistRoutes.js';
 import analyticsRoutes from './routes/analyticsRoutes.js';
@@ -30,6 +31,7 @@ app.use('/api/auth', authRoutes);
 app.use('/api/superadmin', superAdminRoutes);
 app.use('/api/reservations', reservationsRoutes);
 app.use('/api/appointments', appointmentsRoutes);
+app.use('/api/services', servicesRoutes);
 app.use('/api/customers', customersRoutes);
 app.use('/api/waitlist', waitlistRoutes);
 app.use('/api/analytics', analyticsRoutes);
@@ -42,5 +44,6 @@ app.use((err, req, res, next) => {
 });
 
 app.listen(PORT, () => {
+  console.log(`💇 Rutas services: /api/services`);
   console.log(`🚀 Backend multi-tenant corriendo en http://localhost:${PORT}`);
 });

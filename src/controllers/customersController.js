@@ -1,31 +1,26 @@
 import { supabase } from '../config/database.js';
 
+// ================================================================
+// GET ALL CUSTOMERS
+// ================================================================
 export async function getCustomers(req, res) {
   try {
     const businessId = req.business.id;
-    const { search, vipOnly } = req.query;
+    const { search, is_vip, sort_by = 'name' } = req.query;
 
     let query = supabase
       .from('customers')
-      .select(`
-        *,
-        customer_preferences (
-          allergies,
-          dietary_restrictions,
-          favorite_table,
-          seating_preference
-        )
-      `)
+      .select('*')
       .eq('restaurant_id', businessId)
-      .order('total_visits', { ascending: false });
+      .order(sort_by, { ascending: true });
 
-    // Filtrar por búsqueda
+    // Filtrar por búsqueda (nombre, teléfono, email)
     if (search) {
       query = query.or(`name.ilike.%${search}%,phone.ilike.%${search}%,email.ilike.%${search}%`);
     }
 
-    // Filtrar solo VIP
-    if (vipOnly === 'true') {
+    // Filtrar por VIP
+    if (is_vip === 'true') {
       query = query.eq('is_vip', true);
     }
 
@@ -44,44 +39,41 @@ export async function getCustomers(req, res) {
   }
 }
 
+// ================================================================
+// GET CUSTOMER BY ID
+// ================================================================
 export async function getCustomer(req, res) {
   try {
     const { customerId } = req.params;
     const businessId = req.business.id;
 
-    const { data: customer, error } = await supabase
+    // Obtener datos del cliente con su historial de citas
+    const { data: customer, error: customerError } = await supabase
       .from('customers')
       .select(`
         *,
-        customer_preferences (
-          allergies,
-          dietary_restrictions,
-          favorite_table,
-          favorite_dishes,
-          favorite_drinks,
-          seating_preference,
-          special_occasions
-        )
+        customer_preferences (*)
       `)
       .eq('id', customerId)
       .eq('restaurant_id', businessId)
       .single();
 
-    if (error || !customer) {
+    if (customerError || !customer) {
       return res.status(404).json({ error: 'Cliente no encontrado' });
     }
 
-    // Obtener historial de reservas
-    const { data: reservations } = await supabase
-      .from('reservations')
+    // Obtener citas del cliente
+    const { data: appointments, error: appointmentsError } = await supabase
+      .from('appointments')
       .select('*')
-      .eq('customer_id', customerId)
-      .order('reservation_date', { ascending: false })
-      .limit(20);
+      .eq('client_phone', customer.phone)
+      .eq('restaurant_id', businessId)
+      .order('scheduled_date', { ascending: false })
+      .limit(10);
 
     res.json({ 
       customer,
-      reservations: reservations || []
+      appointments: appointments || []
     });
 
   } catch (error) {
@@ -90,6 +82,9 @@ export async function getCustomer(req, res) {
   }
 }
 
+// ================================================================
+// CREATE CUSTOMER
+// ================================================================
 export async function createCustomer(req, res) {
   try {
     const businessId = req.business.id;
@@ -97,28 +92,29 @@ export async function createCustomer(req, res) {
       name,
       phone,
       email,
-      birthday,
-      isVIP,
       notes,
-      allergies,
-      dietaryRestrictions,
+      preferences,
     } = req.body;
 
     // Validaciones
     if (!name || !phone) {
-      return res.status(400).json({ error: 'Nombre y teléfono son requeridos' });
+      return res.status(400).json({ 
+        error: 'Nombre y teléfono son requeridos' 
+      });
     }
 
-    // Verificar que no exista ya
-    const { data: existing } = await supabase
+    // Verificar si ya existe un cliente con ese teléfono
+    const { data: existingCustomer } = await supabase
       .from('customers')
       .select('id')
       .eq('restaurant_id', businessId)
       .eq('phone', phone)
       .single();
 
-    if (existing) {
-      return res.status(400).json({ error: 'Cliente ya existe con ese teléfono' });
+    if (existingCustomer) {
+      return res.status(400).json({ 
+        error: 'Ya existe un cliente con ese teléfono' 
+      });
     }
 
     // Crear cliente
@@ -128,11 +124,12 @@ export async function createCustomer(req, res) {
         restaurant_id: businessId,
         name,
         phone,
-        email,
-        birthday,
-        is_vip: isVIP || false,
-        notes,
+        email: email || null,
+        notes: notes || null,
+        is_vip: false,
+        total_visits: 0,
         first_visit_at: new Date().toISOString(),
+        last_visit_at: new Date().toISOString(),
       })
       .select()
       .single();
@@ -142,14 +139,13 @@ export async function createCustomer(req, res) {
       return res.status(500).json({ error: 'Error creando cliente' });
     }
 
-    // Crear preferencias si hay
-    if (allergies || dietaryRestrictions) {
+    // Si hay preferencias, crearlas
+    if (preferences && customer.id) {
       await supabase
         .from('customer_preferences')
         .insert({
           customer_id: customer.id,
-          allergies,
-          dietary_restrictions: dietaryRestrictions,
+          ...preferences,
         });
     }
 
@@ -161,72 +157,44 @@ export async function createCustomer(req, res) {
   }
 }
 
+// ================================================================
+// UPDATE CUSTOMER
+// ================================================================
 export async function updateCustomer(req, res) {
   try {
     const { customerId } = req.params;
     const businessId = req.business.id;
-    const {
-      name,
-      email,
-      birthday,
-      isVIP,
-      notes,
-      allergies,
-      dietaryRestrictions,
-      favoriteTable,
-    } = req.body;
+    const updateData = req.body;
 
-    // Actualizar cliente
-    const updates = {};
-    if (name !== undefined) updates.name = name;
-    if (email !== undefined) updates.email = email;
-    if (birthday !== undefined) updates.birthday = birthday;
-    if (isVIP !== undefined) updates.is_vip = isVIP;
-    if (notes !== undefined) updates.notes = notes;
-
-    const { data: customer, error: customerError } = await supabase
+    // Verificar que el cliente pertenezca al negocio
+    const { data: customer, error: checkError } = await supabase
       .from('customers')
-      .update(updates)
+      .select('id')
       .eq('id', customerId)
       .eq('restaurant_id', businessId)
+      .single();
+
+    if (checkError || !customer) {
+      return res.status(404).json({ error: 'Cliente no encontrado' });
+    }
+
+    // Actualizar cliente
+    const { data, error } = await supabase
+      .from('customers')
+      .update({
+        ...updateData,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', customerId)
       .select()
       .single();
 
-    if (customerError) {
-      console.error('Error actualizando cliente:', customerError);
+    if (error) {
+      console.error('Error actualizando cliente:', error);
       return res.status(500).json({ error: 'Error actualizando cliente' });
     }
 
-    // Actualizar preferencias
-    if (allergies !== undefined || dietaryRestrictions !== undefined || favoriteTable !== undefined) {
-      const prefUpdates = {};
-      if (allergies !== undefined) prefUpdates.allergies = allergies;
-      if (dietaryRestrictions !== undefined) prefUpdates.dietary_restrictions = dietaryRestrictions;
-      if (favoriteTable !== undefined) prefUpdates.favorite_table = favoriteTable;
-
-      // Verificar si ya tiene preferencias
-      const { data: existingPref } = await supabase
-        .from('customer_preferences')
-        .select('id')
-        .eq('customer_id', customerId)
-        .single();
-
-      if (existingPref) {
-        await supabase
-          .from('customer_preferences')
-          .update(prefUpdates)
-          .eq('customer_id', customerId);
-      } else {
-        await supabase
-          .from('customer_preferences')
-          .insert({
-            customer_id: customerId,
-            ...prefUpdates,
-          });
-      }
-    }
-
-    res.json({ customer });
+    res.json({ customer: data });
 
   } catch (error) {
     console.error('Error en updateCustomer:', error);
@@ -234,33 +202,126 @@ export async function updateCustomer(req, res) {
   }
 }
 
+// ================================================================
+// DELETE CUSTOMER
+// ================================================================
+export async function deleteCustomer(req, res) {
+  try {
+    const { customerId } = req.params;
+    const businessId = req.business.id;
+
+    // Verificar que el cliente pertenezca al negocio
+    const { data: customer, error: checkError } = await supabase
+      .from('customers')
+      .select('id')
+      .eq('id', customerId)
+      .eq('restaurant_id', businessId)
+      .single();
+
+    if (checkError || !customer) {
+      return res.status(404).json({ error: 'Cliente no encontrado' });
+    }
+
+    // Eliminar cliente (esto puede fallar si tiene citas)
+    const { error } = await supabase
+      .from('customers')
+      .delete()
+      .eq('id', customerId);
+
+    if (error) {
+      console.error('Error eliminando cliente:', error);
+      return res.status(500).json({ 
+        error: 'Error eliminando cliente. Puede tener citas asociadas.' 
+      });
+    }
+
+    res.json({ message: 'Cliente eliminado correctamente' });
+
+  } catch (error) {
+    console.error('Error en deleteCustomer:', error);
+    res.status(500).json({ error: 'Error en el servidor' });
+  }
+}
+
+// ================================================================
+// TOGGLE VIP STATUS
+// ================================================================
+export async function toggleVipStatus(req, res) {
+  try {
+    const { customerId } = req.params;
+    const businessId = req.business.id;
+
+    // Obtener estado actual
+    const { data: customer, error: getError } = await supabase
+      .from('customers')
+      .select('is_vip')
+      .eq('id', customerId)
+      .eq('restaurant_id', businessId)
+      .single();
+
+    if (getError || !customer) {
+      return res.status(404).json({ error: 'Cliente no encontrado' });
+    }
+
+    // Cambiar estado VIP
+    const { data, error } = await supabase
+      .from('customers')
+      .update({ 
+        is_vip: !customer.is_vip,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', customerId)
+      .select()
+      .single();
+
+    if (error) {
+      console.error('Error actualizando estado VIP:', error);
+      return res.status(500).json({ error: 'Error actualizando estado VIP' });
+    }
+
+    res.json({ customer: data });
+
+  } catch (error) {
+    console.error('Error en toggleVipStatus:', error);
+    res.status(500).json({ error: 'Error en el servidor' });
+  }
+}
+
+// ================================================================
+// GET CUSTOMER STATS
+// ================================================================
 export async function getCustomerStats(req, res) {
   try {
     const businessId = req.business.id;
 
-    // Total clientes
-    const { count: totalCustomers } = await supabase
+    // Total de clientes
+    const { count: totalCustomers, error: totalError } = await supabase
       .from('customers')
       .select('*', { count: 'exact', head: true })
       .eq('restaurant_id', businessId);
 
     // Clientes VIP
-    const { count: vipCustomers } = await supabase
+    const { count: vipCustomers, error: vipError } = await supabase
       .from('customers')
       .select('*', { count: 'exact', head: true })
       .eq('restaurant_id', businessId)
       .eq('is_vip', true);
 
-    // Clientes nuevos este mes
-    const firstDayOfMonth = new Date();
-    firstDayOfMonth.setDate(1);
-    firstDayOfMonth.setHours(0, 0, 0, 0);
+    // Nuevos clientes este mes
+    const startOfMonth = new Date();
+    startOfMonth.setDate(1);
+    startOfMonth.setHours(0, 0, 0, 0);
 
-    const { count: newThisMonth } = await supabase
+    const { count: newThisMonth, error: newError } = await supabase
       .from('customers')
       .select('*', { count: 'exact', head: true })
       .eq('restaurant_id', businessId)
-      .gte('first_visit_at', firstDayOfMonth.toISOString());
+      .gte('first_visit_at', startOfMonth.toISOString());
+
+    if (totalError || vipError || newError) {
+      console.error('Error obteniendo stats:', { totalError, vipError, newError });
+      return res.status(500).json({ error: 'Error obteniendo estadísticas' });
+    }
 
     res.json({
       total: totalCustomers || 0,

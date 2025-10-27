@@ -6,6 +6,7 @@ import {
   updateAppointmentStatus,
   deleteAppointment,
   getAppointmentStats,
+  checkAvailability,
 } from '../controllers/appointmentsController.js';
 import { authenticateToken, requireRole } from '../middleware/auth.js';
 import { loadBusinessFromSlug, validateBusinessAccess } from '../middleware/tenant.js';
@@ -16,6 +17,9 @@ const router = express.Router();
 router.use(authenticateToken);
 router.use(loadBusinessFromSlug);
 router.use(validateBusinessAccess);
+
+// GET /api/appointments/check-availability
+router.get('/check-availability', checkAvailability);
 
 // GET /api/appointments
 router.get('/', getAppointments);

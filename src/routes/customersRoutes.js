@@ -4,6 +4,8 @@ import {
   getCustomer,
   createCustomer,
   updateCustomer,
+  deleteCustomer,
+  toggleVipStatus,
   getCustomerStats,
 } from '../controllers/customersController.js';
 import { authenticateToken, requireRole } from '../middleware/auth.js';
@@ -11,7 +13,7 @@ import { loadBusinessFromSlug, validateBusinessAccess } from '../middleware/tena
 
 const router = express.Router();
 
-// Autenticación + tenant
+// Todas las rutas requieren autenticación + acceso al negocio
 router.use(authenticateToken);
 router.use(loadBusinessFromSlug);
 router.use(validateBusinessAccess);
@@ -26,9 +28,15 @@ router.get('/stats', getCustomerStats);
 router.get('/:customerId', getCustomer);
 
 // POST /api/customers
-router.post('/', requireRole('ADMIN', 'MANAGER'), createCustomer);
+router.post('/', requireRole('ADMIN', 'MANAGER', 'STAFF'), createCustomer);
 
 // PATCH /api/customers/:customerId
-router.patch('/:customerId', requireRole('ADMIN', 'MANAGER'), updateCustomer);
+router.patch('/:customerId', requireRole('ADMIN', 'MANAGER', 'STAFF'), updateCustomer);
+
+// PATCH /api/customers/:customerId/vip
+router.patch('/:customerId/vip', requireRole('ADMIN', 'MANAGER'), toggleVipStatus);
+
+// DELETE /api/customers/:customerId
+router.delete('/:customerId', requireRole('ADMIN', 'MANAGER'), deleteCustomer);
 
 export default router;
