@@ -8,7 +8,7 @@ function hasTimeConflict(newStart, newEnd, existingStart, existingEnd) {
   const newEndTime = new Date(newEnd).getTime();
   const existingStartTime = new Date(existingStart).getTime();
   const existingEndTime = new Date(existingEnd).getTime();
-  
+
   // Lógica correcta: Hay conflicto si hay solapamiento
   // La nueva cita solapa si empieza antes de que termine la existente
   // Y termina después de que empiece la existente
@@ -70,12 +70,12 @@ export async function getAppointments(req, res) {
 export async function getTodayAppointments(req, res) {
   try {
     const businessId = req.business.id;
-    
+
     // Obtener fecha actual en Madrid
     const now = new Date();
     const madridDate = new Date(now.toLocaleString('en-US', { timeZone: 'Europe/Madrid' }));
     const today = madridDate.toISOString().split('T')[0];
-    
+
     const startOfDay = `${today}T00:00:00Z`;
     const endOfDay = `${today}T23:59:59Z`;
 
@@ -117,14 +117,14 @@ export async function checkAvailability(req, res) {
     const { date, time, duration_minutes = 60 } = req.body;
 
     if (!date || !time) {
-      return res.status(400).json({ 
-        error: 'Fecha y hora son requeridas' 
+      return res.status(400).json({
+        error: 'Fecha y hora son requeridas'
       });
     }
 
     // Si `time` viene como "12:30", construir ISO completo
     let requestedStart;
-    
+
     if (time.includes(':')) {
       // Formato: "12:30" o "12:30:00"
       requestedStart = new Date(`${date}T${time.padEnd(8, ':00')}Z`);
@@ -132,7 +132,7 @@ export async function checkAvailability(req, res) {
       // Formato: "12" (solo hora)
       requestedStart = new Date(`${date}T${time.padStart(2, '0')}:00:00Z`);
     }
-    
+
     const requestedEnd = new Date(requestedStart.getTime() + (duration_minutes * 60 * 1000));
 
     console.log('=== Check Availability (DEBUG) ===');
@@ -217,7 +217,7 @@ export async function checkAvailability(req, res) {
 
     if (businessHours && businessHours[dayOfWeek]) {
       const daySchedule = businessHours[dayOfWeek];
-      
+
       if (daySchedule.closed) {
         isWithinBusinessHours = false;
         businessHoursMessage = `El negocio está cerrado los ${dayOfWeek}`;
@@ -339,7 +339,7 @@ export async function checkAvailability(req, res) {
 
 //     // Buscar o crear conversación
 //     let conversationId = null;
-    
+
 //     const { data: existingConv } = await supabase
 //       .from('conversations')
 //       .select('id')
@@ -411,7 +411,6 @@ export async function checkAvailability(req, res) {
 
 export async function createAppointment(req, res) {
   try {
-    const restaurantId = req.user.restaurants.id;
     const {
       clientName,
       clientPhone,
@@ -423,62 +422,42 @@ export async function createAppointment(req, res) {
       notes,
     } = req.body;
 
-    // Validaciones
+    const businessId = req.business.id;
+    const restaurantId = req.business.id;
+
     if (!clientName || !clientPhone || !scheduledDate || !appointmentTime) {
-      return res.status(400).json({ 
-        error: 'Nombre, teléfono, fecha y hora son requeridos' 
+      return res.status(400).json({
+        error: 'Nombre, teléfono, fecha y hora son requeridos',
       });
     }
 
-    // Verificar disponibilidad antes de crear
-    const appointmentDateTime = new Date(appointmentTime);
-    const scheduledDateOnly = appointmentDateTime.toISOString().split('T')[0];
-    const appointmentEnd = new Date(appointmentDateTime.getTime() + (durationMinutes || 60) * 60000);
+    const [hours, minutes] = appointmentTime.split(':');
+    const dateTimeString = `${scheduledDate}T${hours.padStart(2, '0')}:${minutes.padStart(2, '0')}:00`;
+    const scheduledDateOnly = scheduledDate;
 
-    const { data: conflicts } = await supabase
-      .from('appointments')
-      .select('*')
-      .eq('restaurant_id', restaurantId)
-      .eq('scheduled_date', scheduledDateOnly)
-      .in('status', ['pendiente', 'confirmado'])
-      .gte('appointment_time', appointmentDateTime.toISOString())
-      .lt('appointment_time', appointmentEnd.toISOString());
+    console.log('📅 Fecha/hora recibida del frontend:', scheduledDate, appointmentTime);
+    console.log('📅 Fecha/hora que se guardará (UTC):', dateTimeString.toString());
+    console.log('📅 Fecha/hora en Madrid:', dateTimeString.toLocaleString('es-ES', { timeZone: 'Europe/Madrid' }));
 
-    if (conflicts && conflicts.length > 0) {
-      return res.status(409).json({ 
-        error: 'Ya existe una cita en ese horario',
-        message: 'El horario seleccionado no está disponible'
-      });
-    }
+    // PASO 1: Buscar o crear cliente
+    let customerId;
+    let isNewCustomer = false;
 
-    // ✅ PASO 1: Buscar cliente existente por teléfono
-    console.log('🔍 Buscando cliente con teléfono:', clientPhone);
-    
-    const { data: existingCustomer, error: searchError } = await supabase
+    const { data: existingCustomer, error: customerError } = await supabase
       .from('customers')
       .select('*')
       .eq('restaurant_id', restaurantId)
       .eq('phone', clientPhone)
       .single();
 
-    if (searchError && searchError.code !== 'PGRST116') {
-      // PGRST116 = No rows found (es normal si no existe el cliente)
-      throw searchError;
-    }
-
-    let customerId = null;
-    let isNewCustomer = false;
-
-    if (existingCustomer) {
-      // ✅ CLIENTE EXISTENTE - Actualizar datos
+    if (existingCustomer && !customerError) {
       console.log('✅ Cliente existente encontrado:', existingCustomer.name);
       customerId = existingCustomer.id;
 
-      // Actualizar total de visitas y última visita
       const { error: updateError } = await supabase
         .from('customers')
         .update({
-          name: clientName, // Actualizar nombre por si cambió
+          name: clientName,
           total_visits: (existingCustomer.total_visits || 0) + 1,
           last_visit_at: new Date().toISOString(),
           updated_at: new Date().toISOString(),
@@ -489,7 +468,6 @@ export async function createAppointment(req, res) {
 
       console.log('📊 Total de visitas actualizado:', (existingCustomer.total_visits || 0) + 1);
     } else {
-      //  CLIENTE NUEVO - Crear registro
       console.log('🆕 Creando nuevo cliente:', clientName);
       isNewCustomer = true;
 
@@ -522,14 +500,12 @@ export async function createAppointment(req, res) {
         client_name: clientName,
         client_phone: clientPhone,
         scheduled_date: scheduledDateOnly,
-        appointment_time: appointmentDateTime.toISOString(),
+        appointment_time: dateTimeString.toString(),
         service_name: serviceName,
         service_id: serviceId,
         duration_minutes: durationMinutes || 60,
         notes: notes || null,
         status: 'confirmado',
-        // 
-        // customer_id: customerId,
       })
       .select()
       .single();
@@ -564,9 +540,9 @@ export async function updateAppointmentStatus(req, res) {
 
     const validStatuses = ['pendiente', 'confirmado', 'cancelada', 'completada', 'no_show'];
     if (!validStatuses.includes(status)) {
-      return res.status(400).json({ 
+      return res.status(400).json({
         error: 'Estado inválido',
-        validStatuses 
+        validStatuses
       });
     }
 
@@ -658,12 +634,12 @@ export async function deleteAppointment(req, res) {
 export async function getAppointmentStats(req, res) {
   try {
     const businessId = req.business.id;
-    
+
     // Obtener fecha actual en Madrid
     const now = new Date();
     const madridDate = new Date(now.toLocaleString('en-US', { timeZone: 'Europe/Madrid' }));
     const today = madridDate.toISOString().split('T')[0];
-    
+
     const startOfDay = `${today}T00:00:00Z`;
     const endOfDay = `${today}T23:59:59Z`;
 
