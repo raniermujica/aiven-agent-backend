@@ -20,13 +20,13 @@ router.use(validateBusinessAccess);
 router.get('/overview', getOverviewStats);
 
 // GET /api/analytics/appointments-by-status
-router.get('/appointments-by-status', getAppointmentsByStatus);
+router.get('/appointments-status', getAppointmentsByStatus);
 
 // GET /api/analytics/top-services
 router.get('/top-services', getTopServices);
 
-// GET /api/analytics/timeline
-router.get('/timeline', getAppointmentsTimeline);
+// GET /api/analytics/appointments-timeline
+router.get('/appointments-timeline', getAppointmentsTimeline);
 
 // GET /api/analytics/revenue
 router.get('/revenue', requireRole('ADMIN', 'MANAGER'), getRevenueStats);

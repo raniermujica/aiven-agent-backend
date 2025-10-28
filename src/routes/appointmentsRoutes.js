@@ -18,9 +18,6 @@ router.use(authenticateToken);
 router.use(loadBusinessFromSlug);
 router.use(validateBusinessAccess);
 
-// GET /api/appointments/check-availability
-router.get('/check-availability', checkAvailability);
-
 // GET /api/appointments
 router.get('/', getAppointments);
 
@@ -29,6 +26,9 @@ router.get('/today', getTodayAppointments);
 
 // GET /api/appointments/stats
 router.get('/stats', getAppointmentStats);
+
+// POST /api/appointments/check-availability
+router.post('/check-availability', checkAvailability);
 
 // POST /api/appointments
 router.post('/', requireRole('ADMIN', 'MANAGER', 'STAFF'), createAppointment);

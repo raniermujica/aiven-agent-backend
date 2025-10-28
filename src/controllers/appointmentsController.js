@@ -9,7 +9,7 @@ function hasTimeConflict(newStart, newEnd, existingStart, existingEnd) {
   const existingStartTime = new Date(existingStart).getTime();
   const existingEndTime = new Date(existingEnd).getTime();
   
-  // ✅ Lógica correcta: Hay conflicto si hay solapamiento
+  // Lógica correcta: Hay conflicto si hay solapamiento
   // La nueva cita solapa si empieza antes de que termine la existente
   // Y termina después de que empiece la existente
   return (newStartTime < existingEndTime) && (newEndTime > existingStartTime);
@@ -114,7 +114,7 @@ export async function getTodayAppointments(req, res) {
 export async function checkAvailability(req, res) {
   try {
     const businessId = req.business.id;
-    const { date, time, duration_minutes = 60 } = req.query;
+    const { date, time, duration_minutes = 60 } = req.body;
 
     if (!date || !time) {
       return res.status(400).json({ 
@@ -122,7 +122,6 @@ export async function checkAvailability(req, res) {
       });
     }
 
-    // ✅ CORRECCIÓN: Construir timestamp correcto
     // Si `time` viene como "12:30", construir ISO completo
     let requestedStart;
     
@@ -161,12 +160,12 @@ export async function checkAvailability(req, res) {
 
     console.log('Total appointments that day:', overlappingAppointments?.length || 0);
 
-    // ✅ Verificar solapamientos
+    // Verificar solapamientos
     let hasConflict = false;
     let conflictingAppointment = null;
 
     for (const apt of overlappingAppointments || []) {
-      // ✅ USAR appointment_time, NO scheduled_date
+      // USAR appointment_time, NO scheduled_date
       const aptStart = new Date(apt.appointment_time);
       const aptDuration = apt.duration_minutes || 60;
       const aptEnd = new Date(aptStart.getTime() + (aptDuration * 60 * 1000));
@@ -178,7 +177,7 @@ export async function checkAvailability(req, res) {
       console.log(`  End (timestamp): ${aptEnd.getTime()}`);
       console.log(`  Duration: ${aptDuration} min`);
 
-      // ✅ Comparación de timestamps
+      // Comparación de timestamps
       console.log(`  Comparison:`);
       console.log(`    requestedStart < aptEnd: ${requestedStart.getTime()} < ${aptEnd.getTime()} = ${requestedStart.getTime() < aptEnd.getTime()}`);
       console.log(`    requestedEnd > aptStart: ${requestedEnd.getTime()} > ${aptStart.getTime()} = ${requestedEnd.getTime() > aptStart.getTime()}`);
@@ -254,9 +253,165 @@ export async function checkAvailability(req, res) {
 // ================================================================
 // CREATE APPOINTMENT (CON VALIDACIÓN DE CONFLICTOS)
 // ================================================================
+// export async function createAppointment(req, res) {
+//   try {
+//     const businessId = req.business.id;
+//     const {
+//       clientName,
+//       clientPhone,
+//       scheduledDate,
+//       appointmentTime,
+//       serviceName,
+//       serviceId,
+//       durationMinutes = 60,
+//       notes,
+//       googleCalendarEventId,
+//     } = req.body;
+
+//     // Validaciones
+//     if (!clientName || !clientPhone) {
+//       return res.status(400).json({ 
+//         error: 'Nombre y teléfono del cliente son requeridos' 
+//       });
+//     }
+
+//     if (!scheduledDate || !appointmentTime) {
+//       return res.status(400).json({ 
+//         error: 'Fecha y hora son requeridas' 
+//       });
+//     }
+
+//     // VALIDAR CONFLICTOS ANTES DE CREAR
+//     const newStart = new Date(appointmentTime);
+//     const newEnd = new Date(newStart.getTime() + (durationMinutes * 60 * 1000));
+
+//     console.log('=== Create Appointment ===');
+//     console.log('New appointment:', clientName, '-', serviceName);
+//     console.log('Start:', newStart.toISOString());
+//     console.log('End:', newEnd.toISOString());
+//     console.log('Duration:', durationMinutes, 'min');
+
+//     // Obtener citas del mismo día
+//     const dayDate = newStart.toISOString().split('T')[0];
+//     const { data: existingAppointments, error: checkError } = await supabase
+//       .from('appointments')
+//       .select('id, client_name, service_name, appointment_time, duration_minutes')
+//       .eq('restaurant_id', businessId)
+//       .neq('status', 'cancelada')
+//       .gte('scheduled_date', `${dayDate}T00:00:00Z`)
+//       .lte('scheduled_date', `${dayDate}T23:59:59Z`);
+
+//     if (checkError) {
+//       console.error('Error checking conflicts:', checkError);
+//       return res.status(500).json({ error: 'Error verificando conflictos' });
+//     }
+
+//     console.log('Existing appointments that day:', existingAppointments?.length || 0);
+
+//     // Verificar conflictos
+//     for (const apt of existingAppointments || []) {
+//       const aptStart = new Date(apt.appointment_time);
+//       const aptDuration = apt.duration_minutes || 60;
+//       const aptEnd = new Date(aptStart.getTime() + (aptDuration * 60 * 1000));
+
+//       console.log(`Checking vs: ${apt.client_name} - ${apt.service_name}`);
+//       console.log(`  Their time: ${aptStart.toISOString()} - ${aptEnd.toISOString()}`);
+
+//       if (hasTimeConflict(newStart, newEnd, aptStart, aptEnd)) {
+//         console.log('  ❌ CONFLICT!');
+//         return res.status(409).json({
+//           error: 'Conflicto de horario',
+//           conflict: {
+//             client_name: apt.client_name,
+//             service_name: apt.service_name,
+//             time: aptStart.toISOString(),
+//             duration: aptDuration
+//           },
+//           message: `Ya existe una cita a esa hora: ${apt.client_name} - ${apt.service_name}`
+//         });
+//       } else {
+//         console.log('  ✅ No conflict');
+//       }
+//     }
+
+//     // No hay conflictos, crear la cita
+//     console.log('✅ No conflicts found, creating appointment...');
+
+//     // Buscar o crear conversación
+//     let conversationId = null;
+    
+//     const { data: existingConv } = await supabase
+//       .from('conversations')
+//       .select('id')
+//       .eq('phone_number', clientPhone)
+//       .eq('restaurant_id', businessId)
+//       .single();
+
+//     if (existingConv) {
+//       conversationId = existingConv.id;
+//     } else {
+//       const { data: newConv, error: convError } = await supabase
+//         .from('conversations')
+//         .insert({
+//           phone_number: clientPhone,
+//           client_name: clientName,
+//           restaurant_id: businessId,
+//         })
+//         .select()
+//         .single();
+
+//       if (!convError && newConv) {
+//         conversationId = newConv.id;
+//       }
+//     }
+
+//     // Crear la cita
+//     const { data: appointment, error: appointmentError } = await supabase
+//       .from('appointments')
+//       .insert({
+//         restaurant_id: businessId,
+//         conversation_id: conversationId,
+//         client_name: clientName,
+//         client_phone: clientPhone,
+//         scheduled_date: scheduledDate,
+//         appointment_time: appointmentTime,
+//         service_name: serviceName,
+//         service_id: serviceId,
+//         duration_minutes: durationMinutes,
+//         notes: notes || '',
+//         status: 'confirmado',
+//         google_calendar_event_id: googleCalendarEventId,
+//         sync_calendar: !!googleCalendarEventId,
+//       })
+//       .select(`
+//         *,
+//         services (
+//           id,
+//           name,
+//           price,
+//           duration_minutes
+//         )
+//       `)
+//       .single();
+
+//     if (appointmentError) {
+//       console.error('Error creando cita:', appointmentError);
+//       return res.status(500).json({ error: 'Error creando cita' });
+//     }
+
+//     console.log('✅ Appointment created successfully:', appointment.id);
+
+//     res.status(201).json({ appointment });
+
+//   } catch (error) {
+//     console.error('Error en createAppointment:', error);
+//     res.status(500).json({ error: 'Error en el servidor' });
+//   }
+// }
+
 export async function createAppointment(req, res) {
   try {
-    const businessId = req.business.id;
+    const restaurantId = req.user.restaurants.id;
     const {
       clientName,
       clientPhone,
@@ -264,149 +419,137 @@ export async function createAppointment(req, res) {
       appointmentTime,
       serviceName,
       serviceId,
-      durationMinutes = 60,
+      durationMinutes,
       notes,
-      googleCalendarEventId,
     } = req.body;
 
     // Validaciones
-    if (!clientName || !clientPhone) {
+    if (!clientName || !clientPhone || !scheduledDate || !appointmentTime) {
       return res.status(400).json({ 
-        error: 'Nombre y teléfono del cliente son requeridos' 
+        error: 'Nombre, teléfono, fecha y hora son requeridos' 
       });
     }
 
-    if (!scheduledDate || !appointmentTime) {
-      return res.status(400).json({ 
-        error: 'Fecha y hora son requeridas' 
-      });
-    }
+    // Verificar disponibilidad antes de crear
+    const appointmentDateTime = new Date(appointmentTime);
+    const scheduledDateOnly = appointmentDateTime.toISOString().split('T')[0];
+    const appointmentEnd = new Date(appointmentDateTime.getTime() + (durationMinutes || 60) * 60000);
 
-    // VALIDAR CONFLICTOS ANTES DE CREAR
-    const newStart = new Date(appointmentTime);
-    const newEnd = new Date(newStart.getTime() + (durationMinutes * 60 * 1000));
-
-    console.log('=== Create Appointment ===');
-    console.log('New appointment:', clientName, '-', serviceName);
-    console.log('Start:', newStart.toISOString());
-    console.log('End:', newEnd.toISOString());
-    console.log('Duration:', durationMinutes, 'min');
-
-    // Obtener citas del mismo día
-    const dayDate = newStart.toISOString().split('T')[0];
-    const { data: existingAppointments, error: checkError } = await supabase
+    const { data: conflicts } = await supabase
       .from('appointments')
-      .select('id, client_name, service_name, appointment_time, duration_minutes')
-      .eq('restaurant_id', businessId)
-      .neq('status', 'cancelada')
-      .gte('scheduled_date', `${dayDate}T00:00:00Z`)
-      .lte('scheduled_date', `${dayDate}T23:59:59Z`);
+      .select('*')
+      .eq('restaurant_id', restaurantId)
+      .eq('scheduled_date', scheduledDateOnly)
+      .in('status', ['pendiente', 'confirmado'])
+      .gte('appointment_time', appointmentDateTime.toISOString())
+      .lt('appointment_time', appointmentEnd.toISOString());
 
-    if (checkError) {
-      console.error('Error checking conflicts:', checkError);
-      return res.status(500).json({ error: 'Error verificando conflictos' });
+    if (conflicts && conflicts.length > 0) {
+      return res.status(409).json({ 
+        error: 'Ya existe una cita en ese horario',
+        message: 'El horario seleccionado no está disponible'
+      });
     }
 
-    console.log('Existing appointments that day:', existingAppointments?.length || 0);
-
-    // Verificar conflictos
-    for (const apt of existingAppointments || []) {
-      const aptStart = new Date(apt.appointment_time);
-      const aptDuration = apt.duration_minutes || 60;
-      const aptEnd = new Date(aptStart.getTime() + (aptDuration * 60 * 1000));
-
-      console.log(`Checking vs: ${apt.client_name} - ${apt.service_name}`);
-      console.log(`  Their time: ${aptStart.toISOString()} - ${aptEnd.toISOString()}`);
-
-      if (hasTimeConflict(newStart, newEnd, aptStart, aptEnd)) {
-        console.log('  ❌ CONFLICT!');
-        return res.status(409).json({
-          error: 'Conflicto de horario',
-          conflict: {
-            client_name: apt.client_name,
-            service_name: apt.service_name,
-            time: aptStart.toISOString(),
-            duration: aptDuration
-          },
-          message: `Ya existe una cita a esa hora: ${apt.client_name} - ${apt.service_name}`
-        });
-      } else {
-        console.log('  ✅ No conflict');
-      }
-    }
-
-    // No hay conflictos, crear la cita
-    console.log('✅ No conflicts found, creating appointment...');
-
-    // Buscar o crear conversación
-    let conversationId = null;
+    // ✅ PASO 1: Buscar cliente existente por teléfono
+    console.log('🔍 Buscando cliente con teléfono:', clientPhone);
     
-    const { data: existingConv } = await supabase
-      .from('conversations')
-      .select('id')
-      .eq('phone_number', clientPhone)
-      .eq('restaurant_id', businessId)
+    const { data: existingCustomer, error: searchError } = await supabase
+      .from('customers')
+      .select('*')
+      .eq('restaurant_id', restaurantId)
+      .eq('phone', clientPhone)
       .single();
 
-    if (existingConv) {
-      conversationId = existingConv.id;
+    if (searchError && searchError.code !== 'PGRST116') {
+      // PGRST116 = No rows found (es normal si no existe el cliente)
+      throw searchError;
+    }
+
+    let customerId = null;
+    let isNewCustomer = false;
+
+    if (existingCustomer) {
+      // ✅ CLIENTE EXISTENTE - Actualizar datos
+      console.log('✅ Cliente existente encontrado:', existingCustomer.name);
+      customerId = existingCustomer.id;
+
+      // Actualizar total de visitas y última visita
+      const { error: updateError } = await supabase
+        .from('customers')
+        .update({
+          name: clientName, // Actualizar nombre por si cambió
+          total_visits: (existingCustomer.total_visits || 0) + 1,
+          last_visit_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', customerId);
+
+      if (updateError) throw updateError;
+
+      console.log('📊 Total de visitas actualizado:', (existingCustomer.total_visits || 0) + 1);
     } else {
-      const { data: newConv, error: convError } = await supabase
-        .from('conversations')
+      //  CLIENTE NUEVO - Crear registro
+      console.log('🆕 Creando nuevo cliente:', clientName);
+      isNewCustomer = true;
+
+      const { data: newCustomer, error: createError } = await supabase
+        .from('customers')
         .insert({
-          phone_number: clientPhone,
-          client_name: clientName,
-          restaurant_id: businessId,
+          restaurant_id: restaurantId,
+          name: clientName,
+          phone: clientPhone,
+          total_visits: 1,
+          total_no_shows: 0,
+          is_vip: false,
+          first_visit_at: new Date().toISOString(),
+          last_visit_at: new Date().toISOString(),
         })
         .select()
         .single();
 
-      if (!convError && newConv) {
-        conversationId = newConv.id;
-      }
+      if (createError) throw createError;
+      customerId = newCustomer.id;
+
+      console.log('✅ Cliente creado con ID:', customerId);
     }
 
-    // Crear la cita
+    // PASO 2: Crear cita vinculada al cliente
     const { data: appointment, error: appointmentError } = await supabase
       .from('appointments')
       .insert({
-        restaurant_id: businessId,
-        conversation_id: conversationId,
+        restaurant_id: restaurantId,
         client_name: clientName,
         client_phone: clientPhone,
-        scheduled_date: scheduledDate,
-        appointment_time: appointmentTime,
+        scheduled_date: scheduledDateOnly,
+        appointment_time: appointmentDateTime.toISOString(),
         service_name: serviceName,
         service_id: serviceId,
-        duration_minutes: durationMinutes,
-        notes: notes || '',
+        duration_minutes: durationMinutes || 60,
+        notes: notes || null,
         status: 'confirmado',
-        google_calendar_event_id: googleCalendarEventId,
-        sync_calendar: !!googleCalendarEventId,
+        // 
+        // customer_id: customerId,
       })
-      .select(`
-        *,
-        services (
-          id,
-          name,
-          price,
-          duration_minutes
-        )
-      `)
+      .select()
       .single();
 
-    if (appointmentError) {
-      console.error('Error creando cita:', appointmentError);
-      return res.status(500).json({ error: 'Error creando cita' });
-    }
+    if (appointmentError) throw appointmentError;
 
-    console.log('✅ Appointment created successfully:', appointment.id);
+    console.log('📅 Cita creada exitosamente');
 
-    res.status(201).json({ appointment });
-
+    res.status(201).json({
+      message: 'Cita creada correctamente',
+      appointment,
+      customer: {
+        id: customerId,
+        isNew: isNewCustomer,
+        totalVisits: isNewCustomer ? 1 : (existingCustomer.total_visits || 0) + 1,
+      },
+    });
   } catch (error) {
-    console.error('Error en createAppointment:', error);
-    res.status(500).json({ error: 'Error en el servidor' });
+    console.error('❌ Error creando cita:', error);
+    res.status(500).json({ error: 'Error al crear la cita' });
   }
 }
 
