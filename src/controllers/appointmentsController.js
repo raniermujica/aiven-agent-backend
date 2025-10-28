@@ -252,7 +252,7 @@ export async function checkAvailability(req, res) {
 }
 
 // ================================================================
-// CREATE APPOINTMENT (✅ CON VALIDACIÓN DE CONFLICTOS)
+// CREATE APPOINTMENT (CON VALIDACIÓN DE CONFLICTOS)
 // ================================================================
 export async function createAppointment(req, res) {
   try {
@@ -282,7 +282,7 @@ export async function createAppointment(req, res) {
       });
     }
 
-    // ✅ VALIDAR CONFLICTOS ANTES DE CREAR
+    // VALIDAR CONFLICTOS ANTES DE CREAR
     const newStart = new Date(appointmentTime);
     const newEnd = new Date(newStart.getTime() + (durationMinutes * 60 * 1000));
 
@@ -335,7 +335,7 @@ export async function createAppointment(req, res) {
       }
     }
 
-    // ✅ No hay conflictos, crear la cita
+    // No hay conflictos, crear la cita
     console.log('✅ No conflicts found, creating appointment...');
 
     // Buscar o crear conversación

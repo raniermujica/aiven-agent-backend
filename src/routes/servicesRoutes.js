@@ -1,7 +1,6 @@
 import express from 'express';
 import {
   getServices,
-  getService,
   createService,
   updateService,
   deleteService,
@@ -11,24 +10,21 @@ import { loadBusinessFromSlug, validateBusinessAccess } from '../middleware/tena
 
 const router = express.Router();
 
-// Todas las rutas requieren autenticación + acceso al negocio
+// Middleware de autenticación y tenant
 router.use(authenticateToken);
 router.use(loadBusinessFromSlug);
 router.use(validateBusinessAccess);
 
-// GET /api/services
+// GET /api/services - Todos pueden ver servicios
 router.get('/', getServices);
 
-// GET /api/services/:serviceId
-router.get('/:serviceId', getService);
+// POST /api/services - Solo ADMIN puede crear
+router.post('/', requireRole('ADMIN'), createService);
 
-// POST /api/services
-router.post('/', requireRole('ADMIN', 'MANAGER'), createService);
+// PATCH /api/services/:serviceId - Solo ADMIN puede actualizar
+router.patch('/:serviceId', requireRole('ADMIN'), updateService);
 
-// PATCH /api/services/:serviceId
-router.patch('/:serviceId', requireRole('ADMIN', 'MANAGER'), updateService);
-
-// DELETE /api/services/:serviceId
-router.delete('/:serviceId', requireRole('ADMIN', 'MANAGER'), deleteService);
+// DELETE /api/services/:serviceId - Solo ADMIN puede eliminar
+router.delete('/:serviceId', requireRole('ADMIN'), deleteService);
 
 export default router;

@@ -1,202 +1,121 @@
 import { supabase } from '../config/database.js';
 
-// ================================================================
-// GET ALL SERVICES
-// ================================================================
+// GET /api/services - Obtener todos los servicios
 export async function getServices(req, res) {
   try {
-    const businessId = req.business.id;
-    const { category, is_active } = req.query;
+    const restaurantId = req.user.restaurants.id;
 
-    let query = supabase
+    const { data: services, error } = await supabase
       .from('services')
       .select('*')
-      .eq('restaurant_id', businessId)
-      .order('display_order', { ascending: true })
-      .order('name', { ascending: true });
+      .eq('restaurant_id', restaurantId)
+      .order('display_order', { ascending: true });
 
-    // Filtrar por categoría si se proporciona
-    if (category) {
-      query = query.eq('category', category);
-    }
+    if (error) throw error;
 
-    // Filtrar por estado activo (por defecto solo activos)
-    if (is_active !== 'false') {
-      query = query.eq('is_active', true);
-    }
-
-    const { data, error } = await query;
-
-    if (error) {
-      console.error('Error obteniendo servicios:', error);
-      return res.status(500).json({ error: 'Error obteniendo servicios' });
-    }
-
-    res.json({ services: data });
-
+    res.json({ services: services || [] });
   } catch (error) {
-    console.error('Error en getServices:', error);
-    res.status(500).json({ error: 'Error en el servidor' });
+    console.error('Error obteniendo servicios:', error);
+    res.status(500).json({ error: 'Error al obtener servicios' });
   }
 }
 
-// ================================================================
-// GET SERVICE BY ID
-// ================================================================
-export async function getService(req, res) {
-  try {
-    const { serviceId } = req.params;
-    const businessId = req.business.id;
-
-    const { data, error } = await supabase
-      .from('services')
-      .select('*')
-      .eq('id', serviceId)
-      .eq('restaurant_id', businessId)
-      .single();
-
-    if (error || !data) {
-      return res.status(404).json({ error: 'Servicio no encontrado' });
-    }
-
-    res.json({ service: data });
-
-  } catch (error) {
-    console.error('Error en getService:', error);
-    res.status(500).json({ error: 'Error en el servidor' });
-  }
-}
-
-// ================================================================
-// CREATE SERVICE
-// ================================================================
+// POST /api/services - Crear nuevo servicio
 export async function createService(req, res) {
   try {
-    const businessId = req.business.id;
-    const {
-      name,
-      description,
-      price,
-      duration_minutes,
-      category,
-      emoji,
-      display_order,
-    } = req.body;
+    const restaurantId = req.user.restaurants.id;
+    const { name, description, price, durationMinutes, category, emoji, displayOrder } = req.body;
 
     // Validaciones
-    if (!name) {
-      return res.status(400).json({ error: 'El nombre del servicio es requerido' });
+    if (!name || !description) {
+      return res.status(400).json({ error: 'Nombre y descripción son requeridos' });
     }
 
     const { data, error } = await supabase
       .from('services')
       .insert({
-        restaurant_id: businessId,
+        restaurant_id: restaurantId,
         name,
-        description: description || '',
+        description,
         price: price || null,
-        duration_minutes: duration_minutes || 60,
+        duration_minutes: durationMinutes || 60,
         category: category || null,
         emoji: emoji || null,
-        display_order: display_order || 0,
+        display_order: displayOrder || 0,
         is_active: true,
       })
       .select()
       .single();
 
-    if (error) {
-      console.error('Error creando servicio:', error);
-      return res.status(500).json({ error: 'Error creando servicio' });
-    }
+    if (error) throw error;
 
-    res.status(201).json({ service: data });
-
+    res.status(201).json({
+      message: 'Servicio creado correctamente',
+      service: data,
+    });
   } catch (error) {
-    console.error('Error en createService:', error);
-    res.status(500).json({ error: 'Error en el servidor' });
+    console.error('Error creando servicio:', error);
+    res.status(500).json({ error: 'Error al crear servicio' });
   }
 }
 
-// ================================================================
-// UPDATE SERVICE
-// ================================================================
+// PATCH /api/services/:serviceId - Actualizar servicio
 export async function updateService(req, res) {
   try {
+    const restaurantId = req.user.restaurants.id;
     const { serviceId } = req.params;
-    const businessId = req.business.id;
-    const updateData = req.body;
+    const { name, description, price, durationMinutes, category, emoji, displayOrder, isActive } = req.body;
 
-    // Verificar que el servicio pertenezca al negocio
-    const { data: service, error: checkError } = await supabase
-      .from('services')
-      .select('id')
-      .eq('id', serviceId)
-      .eq('restaurant_id', businessId)
-      .single();
+    const updateData = {};
+    
+    if (name !== undefined) updateData.name = name;
+    if (description !== undefined) updateData.description = description;
+    if (price !== undefined) updateData.price = price;
+    if (durationMinutes !== undefined) updateData.duration_minutes = durationMinutes;
+    if (category !== undefined) updateData.category = category;
+    if (emoji !== undefined) updateData.emoji = emoji;
+    if (displayOrder !== undefined) updateData.display_order = displayOrder;
+    if (isActive !== undefined) updateData.is_active = isActive;
 
-    if (checkError || !service) {
-      return res.status(404).json({ error: 'Servicio no encontrado' });
-    }
+    updateData.updated_at = new Date().toISOString();
 
-    // Actualizar servicio
     const { data, error } = await supabase
       .from('services')
-      .update({
-        ...updateData,
-        updated_at: new Date().toISOString(),
-      })
+      .update(updateData)
       .eq('id', serviceId)
+      .eq('restaurant_id', restaurantId)
       .select()
       .single();
 
-    if (error) {
-      console.error('Error actualizando servicio:', error);
-      return res.status(500).json({ error: 'Error actualizando servicio' });
-    }
+    if (error) throw error;
 
-    res.json({ service: data });
-
+    res.json({
+      message: 'Servicio actualizado correctamente',
+      service: data,
+    });
   } catch (error) {
-    console.error('Error en updateService:', error);
-    res.status(500).json({ error: 'Error en el servidor' });
+    console.error('Error actualizando servicio:', error);
+    res.status(500).json({ error: 'Error al actualizar servicio' });
   }
 }
 
-// ================================================================
-// DELETE SERVICE
-// ================================================================
+// DELETE /api/services/:serviceId - Eliminar servicio
 export async function deleteService(req, res) {
   try {
+    const restaurantId = req.user.restaurants.id;
     const { serviceId } = req.params;
-    const businessId = req.business.id;
 
-    // Verificar que el servicio pertenezca al negocio
-    const { data: service, error: checkError } = await supabase
-      .from('services')
-      .select('id')
-      .eq('id', serviceId)
-      .eq('restaurant_id', businessId)
-      .single();
-
-    if (checkError || !service) {
-      return res.status(404).json({ error: 'Servicio no encontrado' });
-    }
-
-    // Soft delete: marcar como inactivo
     const { error } = await supabase
       .from('services')
-      .update({ is_active: false })
-      .eq('id', serviceId);
+      .delete()
+      .eq('id', serviceId)
+      .eq('restaurant_id', restaurantId);
 
-    if (error) {
-      console.error('Error eliminando servicio:', error);
-      return res.status(500).json({ error: 'Error eliminando servicio' });
-    }
+    if (error) throw error;
 
     res.json({ message: 'Servicio eliminado correctamente' });
-
   } catch (error) {
-    console.error('Error en deleteService:', error);
-    res.status(500).json({ error: 'Error en el servidor' });
+    console.error('Error eliminando servicio:', error);
+    res.status(500).json({ error: 'Error al eliminar servicio' });
   }
 };

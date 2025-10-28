@@ -10,6 +10,7 @@ import customersRoutes from './routes/customersRoutes.js';
 import waitlistRoutes from './routes/waitlistRoutes.js';
 import analyticsRoutes from './routes/analyticsRoutes.js';
 import webhooksRoutes from './routes/webhooksRoutes.js';
+import settingsRoutes from './routes/settingsRoutes.js';
 
 dotenv.config();
 
@@ -32,10 +33,12 @@ app.use('/api/superadmin', superAdminRoutes);
 app.use('/api/reservations', reservationsRoutes);
 app.use('/api/appointments', appointmentsRoutes);
 app.use('/api/services', servicesRoutes);
+app.use('/api/settings', settingsRoutes);
 app.use('/api/customers', customersRoutes);
 app.use('/api/waitlist', waitlistRoutes);
 app.use('/api/analytics', analyticsRoutes);
 app.use('/api/webhooks', webhooksRoutes);
+
 
 // Error handler
 app.use((err, req, res, next) => {
