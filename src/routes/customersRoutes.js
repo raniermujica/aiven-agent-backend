@@ -7,6 +7,7 @@ import {
   deleteCustomer,
   toggleVipStatus,
   getCustomerStats,
+  getCustomerProfile, 
 } from '../controllers/customersController.js';
 import { authenticateToken, requireRole } from '../middleware/auth.js';
 import { loadBusinessFromSlug, validateBusinessAccess } from '../middleware/tenant.js';
@@ -23,6 +24,9 @@ router.get('/', getCustomers);
 
 // GET /api/customers/stats
 router.get('/stats', getCustomerStats);
+
+// GET /api/customers/:customerId/profile
+router.get('/:customerId/profile', getCustomerProfile);
 
 // GET /api/customers/:customerId
 router.get('/:customerId', getCustomer);

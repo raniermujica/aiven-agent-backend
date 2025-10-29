@@ -333,4 +333,96 @@ export async function getCustomerStats(req, res) {
     console.error('Error en getCustomerStats:', error);
     res.status(500).json({ error: 'Error en el servidor' });
   }
+}
+// ================================================================
+// GET CUSTOMER PROFILE (DETALLADO)
+// ================================================================
+export async function getCustomerProfile(req, res) {
+  try {
+    const { customerId } = req.params;
+    const businessId = req.business.id;
+
+    // Obtener datos del cliente
+    const { data: customer, error: customerError } = await supabase
+      .from('customers')
+      .select('*')
+      .eq('id', customerId)
+      .eq('restaurant_id', businessId)
+      .single();
+
+    if (customerError || !customer) {
+      return res.status(404).json({ error: 'Cliente no encontrado' });
+    }
+
+    // Obtener todas las citas del cliente (completadas y confirmadas)
+    const { data: appointments, error: appointmentsError } = await supabase
+      .from('appointments')
+      .select(`
+        id,
+        scheduled_date,
+        appointment_time,
+        service_name,
+        duration_minutes,
+        amount_paid,
+        status,
+        notes,
+        created_at
+      `)
+      .eq('client_phone', customer.phone)
+      .eq('restaurant_id', businessId)
+      .in('status', ['completada', 'confirmado', 'pendiente'])
+      .order('scheduled_date', { ascending: false });
+
+    if (appointmentsError) {
+      console.error('Error obteniendo citas:', appointmentsError);
+    }
+
+    // Calcular estadísticas
+    const completedAppointments = appointments?.filter(a => a.status === 'completada') || [];
+    const totalSpent = completedAppointments.reduce((sum, apt) => sum + (parseFloat(apt.amount_paid) || 0), 0);
+    
+    // Servicios más frecuentes
+    const serviceCount = {};
+    completedAppointments.forEach(apt => {
+      if (apt.service_name) {
+        serviceCount[apt.service_name] = (serviceCount[apt.service_name] || 0) + 1;
+      }
+    });
+    
+    const favoriteServices = Object.entries(serviceCount)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 3)
+      .map(([name, count]) => ({ name, count }));
+
+    // Última visita
+    const lastVisit = completedAppointments[0] || null;
+
+    // Calcular promedio de gasto por visita
+    const averageSpent = completedAppointments.length > 0 
+      ? (totalSpent / completedAppointments.length).toFixed(2) 
+      : '0.00';
+
+    res.json({
+      customer,
+      appointments: appointments || [],
+      stats: {
+        totalVisits: customer.total_visits || 0,
+        completedVisits: completedAppointments.length,
+        totalSpent: totalSpent.toFixed(2),
+        averageSpent,
+        favoriteServices,
+        lastVisit: lastVisit ? {
+          date: lastVisit.scheduled_date,
+          service: lastVisit.service_name,
+          amount: lastVisit.amount_paid
+        } : null,
+        firstVisit: customer.first_visit_at,
+        lastVisitDate: customer.last_visit_at
+      }
+    });
+
+  } catch (error) {
+    console.error('Error en getCustomerProfile:', error);
+    res.status(500).json({ error: 'Error en el servidor' });
+  }
 };

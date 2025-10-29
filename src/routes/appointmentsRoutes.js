@@ -7,6 +7,8 @@ import {
   deleteAppointment,
   getAppointmentStats,
   checkAvailability,
+  getAppointmentById,
+  updateAppointment
 } from '../controllers/appointmentsController.js';
 import { authenticateToken, requireRole } from '../middleware/auth.js';
 import { loadBusinessFromSlug, validateBusinessAccess } from '../middleware/tenant.js';
@@ -27,6 +29,9 @@ router.get('/today', getTodayAppointments);
 // GET /api/appointments/stats
 router.get('/stats', getAppointmentStats);
 
+// GET /api/appointments/:appointmentId/details
+router.get('/:appointmentId/details', getAppointmentById);
+
 // POST /api/appointments/check-availability
 router.post('/check-availability', checkAvailability);
 
@@ -35,6 +40,9 @@ router.post('/', requireRole('ADMIN', 'MANAGER', 'STAFF'), createAppointment);
 
 // PATCH /api/appointments/:appointmentId/status
 router.patch('/:appointmentId/status', requireRole('ADMIN', 'MANAGER', 'STAFF'), updateAppointmentStatus);
+
+// PATCH /api/appointments/:appointmentId
+router.patch('/:appointmentId', requireRole('ADMIN', 'MANAGER', 'STAFF'), updateAppointment);
 
 // DELETE /api/appointments/:appointmentId
 router.delete('/:appointmentId', requireRole('ADMIN', 'MANAGER', 'STAFF'), deleteAppointment);

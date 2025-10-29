@@ -572,4 +572,107 @@ export async function getAppointmentStats(req, res) {
     console.error('Error en getAppointmentStats:', error);
     res.status(500).json({ error: 'Error en el servidor' });
   }
+}
+
+// ================================================================
+// GET APPOINTMENT BY ID (DETALLE)
+// ================================================================
+export async function getAppointmentById(req, res) {
+  try {
+    const { appointmentId } = req.params;
+    const businessId = req.business.id;
+
+    // Obtener la cita con información del servicio
+    const { data: appointment, error: appointmentError } = await supabase
+      .from('appointments')
+      .select(`
+        *,
+        services (
+          id,
+          name,
+          price,
+          duration_minutes
+        )
+      `)
+      .eq('id', appointmentId)
+      .eq('restaurant_id', businessId)
+      .single();
+
+    if (appointmentError || !appointment) {
+      return res.status(404).json({ error: 'Cita no encontrada' });
+    }
+
+    // Buscar información del cliente por teléfono
+    const { data: customer } = await supabase
+      .from('customers')
+      .select('*')
+      .eq('restaurant_id', businessId)
+      .eq('phone', appointment.client_phone)
+      .single();
+
+    // Obtener historial de citas del cliente (últimas 5)
+    const { data: customerHistory } = await supabase
+      .from('appointments')
+      .select('id, scheduled_date, appointment_time, service_name, status, amount_paid')
+      .eq('restaurant_id', businessId)
+      .eq('client_phone', appointment.client_phone)
+      .neq('id', appointmentId)
+      .order('scheduled_date', { ascending: false })
+      .limit(5);
+
+    res.json({
+      appointment,
+      customer: customer || null,
+      customerHistory: customerHistory || []
+    });
+
+  } catch (error) {
+    console.error('Error en getAppointmentById:', error);
+    res.status(500).json({ error: 'Error en el servidor' });
+  }
+}
+
+// ================================================================
+// UPDATE APPOINTMENT
+// ================================================================
+export async function updateAppointment(req, res) {
+  try {
+    const { appointmentId } = req.params;
+    const businessId = req.business.id;
+    const updateData = req.body;
+
+    // Verificar que la cita pertenezca al negocio
+    const { data: appointment, error: checkError } = await supabase
+      .from('appointments')
+      .select('id')
+      .eq('id', appointmentId)
+      .eq('restaurant_id', businessId)
+      .single();
+
+    if (checkError || !appointment) {
+      return res.status(404).json({ error: 'Cita no encontrada' });
+    }
+
+    // Actualizar cita
+    const { data, error } = await supabase
+      .from('appointments')
+      .update({
+        ...updateData,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', appointmentId)
+      .select()
+      .single();
+
+    if (error) {
+      console.error('Error actualizando cita:', error);
+      return res.status(500).json({ error: 'Error actualizando cita' });
+    }
+
+    res.json({ appointment: data });
+
+  } catch (error) {
+    console.error('Error en updateAppointment:', error);
+    res.status(500).json({ error: 'Error en el servidor' });
+  }
 };
