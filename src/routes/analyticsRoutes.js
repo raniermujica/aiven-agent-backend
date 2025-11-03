@@ -19,7 +19,7 @@ router.use(validateBusinessAccess);
 // GET /api/analytics/overview
 router.get('/overview', getOverviewStats);
 
-// GET /api/analytics/appointments-by-status
+// GET /api/analytics/appointments-status
 router.get('/appointments-status', getAppointmentsByStatus);
 
 // GET /api/analytics/top-services

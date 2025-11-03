@@ -6,21 +6,21 @@ import { supabase } from '../config/database.js';
 export async function getOverviewStats(req, res) {
   try {
     const businessId = req.business.id;
-    
+
     // Fechas para cálculos
     const now = new Date();
     const today = now.toISOString().split('T')[0];
-    
+
     // Inicio de esta semana (lunes)
     const startOfWeek = new Date(now);
     const dayOfWeek = startOfWeek.getDay();
     const diff = dayOfWeek === 0 ? -6 : 1 - dayOfWeek; // Ajustar al lunes
     startOfWeek.setDate(startOfWeek.getDate() + diff);
     startOfWeek.setHours(0, 0, 0, 0);
-    
+
     // Inicio del mes
     const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
-    
+
     // Citas de hoy
     const { count: appointmentsToday } = await supabase
       .from('appointments')
@@ -88,23 +88,18 @@ export async function getOverviewStats(req, res) {
 export async function getAppointmentsByStatus(req, res) {
   try {
     const businessId = req.business.id;
-    const { period = 'month' } = req.query;
+    const { startDate, endDate } = req.query; // 
 
-    // Calcular fecha de inicio según período
-    let startDate = new Date();
-    if (period === 'week') {
-      startDate.setDate(startDate.getDate() - 7);
-    } else if (period === 'month') {
-      startDate.setMonth(startDate.getMonth() - 1);
-    } else if (period === 'year') {
-      startDate.setFullYear(startDate.getFullYear() - 1);
+    if (!startDate || !endDate) {
+      return res.status(400).json({ error: 'startDate y endDate son requeridos' });
     }
 
     const { data: appointments, error } = await supabase
       .from('appointments')
       .select('status')
       .eq('restaurant_id', businessId)
-      .gte('scheduled_date', startDate.toISOString());
+      .gte('scheduled_date', startDate) 
+      .lte('scheduled_date', endDate);  
 
     if (error) {
       console.error('Error obteniendo citas por estado:', error);
@@ -140,17 +135,18 @@ export async function getAppointmentsByStatus(req, res) {
 export async function getTopServices(req, res) {
   try {
     const businessId = req.business.id;
-    const { limit = 10 } = req.query;
+    const { limit = 5, startDate, endDate } = req.query;
 
-    // Obtener citas con servicios del último mes
-    const oneMonthAgo = new Date();
-    oneMonthAgo.setMonth(oneMonthAgo.getMonth() - 1);
+    if (!startDate || !endDate) {
+      return res.status(400).json({ error: 'startDate y endDate son requeridos' });
+    }
 
     const { data: appointments, error } = await supabase
       .from('appointments')
       .select('service_name')
       .eq('restaurant_id', businessId)
-      .gte('scheduled_date', oneMonthAgo.toISOString())
+      .gte('scheduled_date', startDate) // 
+      .lte('scheduled_date', endDate)   // 
       .not('service_name', 'is', null);
 
     if (error) {
@@ -180,22 +176,23 @@ export async function getTopServices(req, res) {
 }
 
 // ================================================================
-// GET APPOINTMENTS TIMELINE (últimos 7 días)
+// GET APPOINTMENTS TIMELINE
 // ================================================================
 export async function getAppointmentsTimeline(req, res) {
   try {
     const businessId = req.business.id;
-    const { days = 7 } = req.query;
+    const { startDate, endDate } = req.query; 
 
-    const startDate = new Date();
-    startDate.setDate(startDate.getDate() - parseInt(days));
-    startDate.setHours(0, 0, 0, 0);
+    if (!startDate || !endDate) {
+      return res.status(400).json({ error: 'startDate y endDate son requeridos' });
+    }
 
     const { data: appointments, error } = await supabase
       .from('appointments')
       .select('scheduled_date, status')
       .eq('restaurant_id', businessId)
-      .gte('scheduled_date', startDate.toISOString())
+      .gte('scheduled_date', startDate) 
+      .lte('scheduled_date', endDate)   
       .order('scheduled_date', { ascending: true });
 
     if (error) {
@@ -204,32 +201,31 @@ export async function getAppointmentsTimeline(req, res) {
     }
 
     // Agrupar por día
-    const timeline = {};
-    for (let i = 0; i < parseInt(days); i++) {
-      const date = new Date(startDate);
-      date.setDate(date.getDate() + i);
-      const dateKey = date.toISOString().split('T')[0];
-      timeline[dateKey] = {
-        date: dateKey,
-        total: 0,
-        confirmado: 0,
-        completada: 0,
-        cancelada: 0,
-      };
-    }
-
-    // Contar citas por día
+    const timelineMap = {};
     appointments.forEach(apt => {
       const dateKey = apt.scheduled_date.split('T')[0];
-      if (timeline[dateKey]) {
-        timeline[dateKey].total++;
-        if (apt.status === 'confirmado') timeline[dateKey].confirmado++;
-        if (apt.status === 'completada') timeline[dateKey].completada++;
-        if (apt.status === 'cancelada') timeline[dateKey].cancelada++;
+      if (!timelineMap[dateKey]) {
+        timelineMap[dateKey] = {
+          date: dateKey,
+          total: 0,
+          confirmado: 0,
+          completada: 0,
+          cancelada: 0,
+          pendiente: 0,
+          no_show: 0,
+        };
+      }
+      timelineMap[dateKey].total++;
+      if (timelineMap[dateKey][apt.status] !== undefined) {
+        timelineMap[dateKey][apt.status]++;
       }
     });
 
-    res.json({ timeline: Object.values(timeline) });
+    const timeline = Object.values(timelineMap).sort((a, b) => 
+      new Date(a.date) - new Date(b.date)
+    );
+
+    res.json({ timeline });
 
   } catch (error) {
     console.error('Error en getAppointmentsTimeline:', error);
@@ -238,28 +234,30 @@ export async function getAppointmentsTimeline(req, res) {
 }
 
 // ================================================================
-// GET REVENUE STATS (si hay precios)
+// GET REVENUE STATS
 // ================================================================
 export async function getRevenueStats(req, res) {
   try {
     const businessId = req.business.id;
+    const { startDate, endDate } = req.query;
 
-    // Citas completadas del mes con servicios
-    const startOfMonth = new Date();
-    startOfMonth.setDate(1);
-    startOfMonth.setHours(0, 0, 0, 0);
+    if (!startDate || !endDate) {
+      return res.status(400).json({ error: 'startDate y endDate son requeridos' });
+    }
 
     const { data: appointments, error } = await supabase
       .from('appointments')
       .select(`
         service_id,
+        amount_paid,
         services (
           price
         )
       `)
       .eq('restaurant_id', businessId)
       .eq('status', 'completada')
-      .gte('scheduled_date', startOfMonth.toISOString());
+      .gte('scheduled_date', startDate) 
+      .lte('scheduled_date', endDate);
 
     if (error) {
       console.error('Error obteniendo ingresos:', error);
@@ -271,7 +269,11 @@ export async function getRevenueStats(req, res) {
     let servicesWithPrice = 0;
 
     appointments.forEach(apt => {
-      if (apt.services?.price) {
+      // Priorizar amount_paid si existe
+      if (apt.amount_paid) {
+        totalRevenue += parseFloat(apt.amount_paid);
+        servicesWithPrice++;
+      } else if (apt.services?.price) {
         totalRevenue += parseFloat(apt.services.price);
         servicesWithPrice++;
       }

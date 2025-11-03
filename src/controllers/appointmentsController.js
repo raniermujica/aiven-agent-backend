@@ -67,7 +67,22 @@ export async function getAppointments(req, res) {
       return res.status(500).json({ error: 'Error obteniendo citas' });
     }
 
-    res.json({ appointments: data });
+    // Agregar conteo de servicios
+    const appointmentsWithServicesCount = await Promise.all(
+      data.map(async (appointment) => {
+        const { count } = await supabase
+          .from('appointment_services')
+          .select('*', { count: 'exact', head: true })
+          .eq('appointment_id', appointment.id);
+
+        return {
+          ...appointment,
+          services_count: count || 0,
+        };
+      })
+    );
+
+    res.json({ appointments: appointmentsWithServicesCount });
 
   } catch (error) {
     console.error('Error en getAppointments:', error);
@@ -78,6 +93,7 @@ export async function getAppointments(req, res) {
 // ================================================================
 // GET TODAY'S APPOINTMENTS
 // ================================================================
+
 export async function getTodayAppointments(req, res) {
   try {
     const businessId = req.business.id;
@@ -93,26 +109,22 @@ export async function getTodayAppointments(req, res) {
     const businessTimezone = business?.timezone || 'Europe/Madrid';
 
     // 2. Calcular inicio y fin del día en el timezone del negocio
-    const now = new Date(); // 'now' siempre es UTC
-
-    // Obtiene el inicio del día (00:00) en 'Europe/Madrid' y lo convierte a UTC
+    const now = new Date();
     const dayStartUTC = fromZonedTime(startOfDay(now), businessTimezone);
-
-    // Obtiene el fin del día (23:59) en 'Europe/Madrid' y lo convierte a UTC
     const dayEndUTC = fromZonedTime(endOfDay(now), businessTimezone);
 
-    // 3. Consultar la BD con el rango UTC correcto
+    // 3. Consultar las citas
     const { data, error } = await supabase
       .from('appointments')
       .select(`
-  *,
-  services (
-   id,
-   name,
-   price,
-   duration_minutes
-  )
-  `)
+        *,
+        services (
+          id,
+          name,
+          price,
+          duration_minutes
+        )
+      `)
       .eq('restaurant_id', businessId)
       .gte('appointment_time', dayStartUTC.toISOString())
       .lte('appointment_time', dayEndUTC.toISOString())
@@ -123,7 +135,22 @@ export async function getTodayAppointments(req, res) {
       return res.status(500).json({ error: 'Error obteniendo citas' });
     }
 
-    res.json({ appointments: data });
+    //  Agregar conteo de servicios a cada cita
+    const appointmentsWithServicesCount = await Promise.all(
+      data.map(async (appointment) => {
+        const { count } = await supabase
+          .from('appointment_services')
+          .select('*', { count: 'exact', head: true })
+          .eq('appointment_id', appointment.id);
+
+        return {
+          ...appointment,
+          services_count: count || 0,
+        };
+      })
+    );
+
+    res.json({ appointments: appointmentsWithServicesCount });
 
   } catch (error) {
     console.error('Error en getTodayAppointments:', error);
@@ -138,7 +165,11 @@ export async function getTodayAppointments(req, res) {
 export async function checkAvailability(req, res) {
   try {
     const businessId = req.business.id;
-    const { date, time, duration_minutes = 60 } = req.body;
+    const { date, time, duration_minutes = 60, services } = req.body;
+
+    const totalDuration = services && services.length > 0
+      ? services.reduce((sum, s) => sum + (s.durationMinutes || 60), 0)
+      : duration_minutes;
 
     if (!date || !time) {
       return res.status(400).json({
@@ -216,26 +247,28 @@ export async function checkAvailability(req, res) {
     }
 
     // Usar el tiempo solicitado (HH:MM) para comparar directamente con la BD (time without timezone)
-    const requestedTimeStr = time.includes(':') ? time : `${time.padStart(2, '0')}:00`;
+    const requestedTimeStr = time.substring(0, 5); // "10:00:00" -> "10:00"
+    const openTimeNormalized = openTime.substring(0, 5); // "10:00:00" -> "10:00"
+    const closeTimeNormalized = closeTime.substring(0, 5); // "20:00:00" -> "20:00"
 
     console.log('Comparing times:');
-    console.log('  Requested:', requestedTimeStr);
-    console.log('  Open:', openTime);
-    console.log('  Close:', closeTime);
+    console.log('  Requested:', requestedTimeStr);
+    console.log('  Open:', openTimeNormalized);
+    console.log('  Close:', closeTimeNormalized);
 
     // 💡 VERIFICACIÓN DE INICIO: La hora de inicio debe ser mayor o igual que la de apertura.
-    if (requestedTimeStr < openTime) {
+    if (requestedTimeStr < openTimeNormalized) {
       return res.json({
         available: false,
         is_within_business_hours: false,
-        business_hours_message: `El horario de atención empieza a las ${openTime}`,
+        business_hours_message: `El horario de atención empieza a las ${openTimeNormalized}`,
         conflicting_appointment: null,
       });
     }
 
     // 3. CALCULAR HORA DE FIN DE CITA EN HORA LOCAL
     const requestedStartUTC = getUTCFromLocal(date, time, businessTimezone);
-    const requestedEndUTC = new Date(requestedStartUTC.getTime() + (duration_minutes * 60 * 1000));
+    const requestedEndUTC = new Date(requestedStartUTC.getTime() + (totalDuration * 60 * 1000));
 
     // Convertir la hora de fin de la cita de vuelta a la hora local (HH:MM) para comparar con closeTime (HH:MM)
     const requestedEndLocal = toZonedTime(requestedEndUTC, businessTimezone);
@@ -245,11 +278,11 @@ export async function checkAvailability(req, res) {
     console.log('  End time local:', endTimeStr);
 
     // 💡 VERIFICACIÓN DE FIN: La hora de finalización debe ser menor o igual que la de cierre.
-    if (endTimeStr > closeTime) {
+    if (endTimeStr > closeTimeNormalized) {
       return res.json({
         available: false,
         is_within_business_hours: false,
-        business_hours_message: `La cita terminaría a las ${endTimeStr}, después del horario de cierre (${closeTime})`,
+        business_hours_message: `La cita terminaría a las ${endTimeStr}, después del horario de cierre (${closeTimeNormalized})`,
         conflicting_appointment: null,
       });
     }
@@ -319,20 +352,20 @@ export async function checkAvailability(req, res) {
 // ================================================================
 // CREATE APPOINTMENT
 // ================================================================
-// ================================================================
-// CREATE APPOINTMENT (CORREGIDO)
-// ================================================================
+
 export async function createAppointment(req, res) {
   try {
     const {
       clientName,
       clientPhone,
-      scheduledDate, // ej: "2025-10-29"
-      appointmentTime, // ej: "13:00"
+      scheduledDate,
+      appointmentTime,
+      services, // ✅ NUEVO: array de servicios [{serviceId, serviceName, durationMinutes, price}]
+      notes,
+      // Mantener compatibilidad con sistema antiguo (un solo servicio)
       serviceName,
       serviceId,
       durationMinutes,
-      notes,
     } = req.body;
 
     const restaurantId = req.business.id;
@@ -343,7 +376,21 @@ export async function createAppointment(req, res) {
       });
     }
 
-    // ✅ CARGAR TIMEZONE DEL NEGOCIO
+    // ✅ Validar que haya al menos un servicio
+    const servicesList = services && services.length > 0
+      ? services
+      : (serviceId ? [{ serviceId, serviceName, durationMinutes }] : []);
+
+    if (servicesList.length === 0) {
+      return res.status(400).json({
+        error: 'Debe seleccionar al menos un servicio',
+      });
+    }
+
+    // ✅ Calcular duración total sumando todos los servicios
+    const totalDuration = servicesList.reduce((sum, s) => sum + (s.durationMinutes || 60), 0);
+
+    // CARGAR TIMEZONE DEL NEGOCIO
     const { data: business, error: businessError } = await supabase
       .from('restaurants')
       .select('timezone')
@@ -355,26 +402,23 @@ export async function createAppointment(req, res) {
     }
 
     const businessTimezone = business?.timezone || 'Europe/Madrid';
-    // Convertir la hora local a UTC usando el timezone
+
     const appointmentDateTime = getUTCFromLocal(
       scheduledDate,
       appointmentTime,
       businessTimezone
     );
-    // Usar la fecha "local" que nos llegó para la columna `scheduled_date`
-    // Convertimos a Date para que Supabase la trate como timestamptz a medianoche
-    const scheduledDateOnly = parseISO(scheduledDate);
 
-    console.log('📅 Creando cita (Corregido):');
+    const scheduledDateOnly = `${scheduledDate}T00:00:00Z`;
+
+    console.log('📅 Creando cita:');
     console.log('Input Local:', scheduledDate, appointmentTime);
     console.log('Timezone:', businessTimezone);
     console.log('Saving appointment_time (UTC):', appointmentDateTime.toISOString());
-    console.log('Saving scheduled_date (UTC):', scheduledDateOnly.toISOString());
+    console.log('Saving scheduled_date:', scheduledDateOnly);
 
-    // PASO 1: Buscar o crear cliente (Tu lógica es correcta)
+    // PASO 1: Buscar o crear cliente
     let customerId;
-    let isNewCustomer = false;
-    // ... (tu lógica de cliente) ...
     const { data: existingCustomer, error: customerError } = await supabase
       .from('customers')
       .select('*')
@@ -384,36 +428,33 @@ export async function createAppointment(req, res) {
 
     if (existingCustomer && !customerError) {
       customerId = existingCustomer.id;
-      // ... (updates)
     } else {
-      isNewCustomer = true;
-      // ... (insert)
       const { data: newCustomer, error: createError } = await supabase
         .from('customers')
         .insert({
           restaurant_id: restaurantId,
-          Fname: clientName,
+          name: clientName,
           phone: clientPhone,
         })
         .select()
         .single();
+
       if (createError) throw createError;
       customerId = newCustomer.id;
     }
 
-
-    // PASO 2: Crear cita
+    // PASO 2: Crear cita principal
     const { data: appointment, error: appointmentError } = await supabase
       .from('appointments')
       .insert({
         restaurant_id: restaurantId,
         client_name: clientName,
         client_phone: clientPhone,
-        scheduled_date: scheduledDateOnly.toISOString(),     // Columna de día
-        appointment_time: appointmentDateTime.toISOString(), // Columna de hora exacta
-        service_name: serviceName,
-        service_id: serviceId,
-        duration_minutes: durationMinutes || 60,
+        scheduled_date: scheduledDateOnly,
+        appointment_time: appointmentDateTime.toISOString(),
+        service_name: servicesList[0].serviceName,
+        service_id: servicesList[0].serviceId || null,
+        duration_minutes: totalDuration, 
         notes: notes || null,
         status: 'confirmado',
         customer_id: customerId,
@@ -423,9 +464,35 @@ export async function createAppointment(req, res) {
 
     if (appointmentError) throw appointmentError;
 
+    // ✅ PASO 3: Insertar servicios en appointment_services
+    const appointmentServicesData = servicesList.map((service, index) => ({
+      appointment_id: appointment.id,
+      service_id: service.serviceId || null,
+      service_name: service.serviceName,
+      duration_minutes: service.durationMinutes || 60,
+      price: service.price || 0,
+      display_order: index,
+    }));
+
+    const { error: servicesError } = await supabase
+      .from('appointment_services')
+      .insert(appointmentServicesData);
+
+    if (servicesError) {
+      console.error('Error insertando servicios:', servicesError);
+      // Rollback: eliminar la cita si falla
+      await supabase.from('appointments').delete().eq('id', appointment.id);
+      throw servicesError;
+    }
+
+    console.log('✅ Cita creada con', servicesList.length, 'servicios');
+
     res.status(201).json({
       message: 'Cita creada correctamente',
-      appointment,
+      appointment: {
+        ...appointment,
+        services: servicesList, // Incluir servicios en respuesta
+      },
     });
   } catch (error) {
     console.error('❌ Error creando cita:', error);
@@ -582,7 +649,7 @@ export async function getAppointmentById(req, res) {
     const { appointmentId } = req.params;
     const businessId = req.business.id;
 
-    // Obtener la cita con información del servicio
+    // Obtener la cita con información del servicio principal
     const { data: appointment, error: appointmentError } = await supabase
       .from('appointments')
       .select(`
@@ -600,6 +667,17 @@ export async function getAppointmentById(req, res) {
 
     if (appointmentError || !appointment) {
       return res.status(404).json({ error: 'Cita no encontrada' });
+    }
+
+    // ✅ NUEVO: Obtener todos los servicios asociados a la cita
+    const { data: appointmentServices, error: servicesError } = await supabase
+      .from('appointment_services')
+      .select('*')
+      .eq('appointment_id', appointmentId)
+      .order('display_order', { ascending: true });
+
+    if (servicesError) {
+      console.error('Error obteniendo servicios de la cita:', servicesError);
     }
 
     // Buscar información del cliente por teléfono
@@ -621,7 +699,10 @@ export async function getAppointmentById(req, res) {
       .limit(5);
 
     res.json({
-      appointment,
+      appointment: {
+        ...appointment,
+        services: appointmentServices || [], // ✅ Agregar servicios
+      },
       customer: customer || null,
       customerHistory: customerHistory || []
     });
@@ -631,7 +712,6 @@ export async function getAppointmentById(req, res) {
     res.status(500).json({ error: 'Error en el servidor' });
   }
 }
-
 // ================================================================
 // UPDATE APPOINTMENT
 // ================================================================
