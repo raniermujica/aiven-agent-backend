@@ -358,11 +358,11 @@ export async function createAppointment(req, res) {
     const {
       clientName,
       clientPhone,
+      clientEmail, 
       scheduledDate,
       appointmentTime,
-      services, // ✅ NUEVO: array de servicios [{serviceId, serviceName, durationMinutes, price}]
+      services, 
       notes,
-      // Mantener compatibilidad con sistema antiguo (un solo servicio)
       serviceName,
       serviceId,
       durationMinutes,
@@ -376,7 +376,12 @@ export async function createAppointment(req, res) {
       });
     }
 
-    // ✅ Validar que haya al menos un servicio
+    if (clientEmail && !clientEmail.match(/^[^\s@]+@[^\s@]+\.[^\s@]+$/)) {
+      return res.status(400).json({
+        error: 'El formato del email no es válido',
+      });
+    }
+
     const servicesList = services && services.length > 0
       ? services
       : (serviceId ? [{ serviceId, serviceName, durationMinutes }] : []);
@@ -387,7 +392,6 @@ export async function createAppointment(req, res) {
       });
     }
 
-    // ✅ Calcular duración total sumando todos los servicios
     const totalDuration = servicesList.reduce((sum, s) => sum + (s.durationMinutes || 60), 0);
 
     // CARGAR TIMEZONE DEL NEGOCIO
@@ -428,6 +432,18 @@ export async function createAppointment(req, res) {
 
     if (existingCustomer && !customerError) {
       customerId = existingCustomer.id;
+      
+      //  Actualizar email si se proporciona
+      if (clientEmail) {
+        await supabase
+          .from('customers')
+          .update({ 
+            email: clientEmail,
+            name: clientName, 
+            updated_at: new Date().toISOString() 
+          })
+          .eq('id', customerId);
+      }
     } else {
       const { data: newCustomer, error: createError } = await supabase
         .from('customers')
@@ -435,6 +451,7 @@ export async function createAppointment(req, res) {
           restaurant_id: restaurantId,
           name: clientName,
           phone: clientPhone,
+          email: clientEmail || null, 
         })
         .select()
         .single();
@@ -450,6 +467,7 @@ export async function createAppointment(req, res) {
         restaurant_id: restaurantId,
         client_name: clientName,
         client_phone: clientPhone,
+        client_email: clientEmail || null, 
         scheduled_date: scheduledDateOnly,
         appointment_time: appointmentDateTime.toISOString(),
         service_name: servicesList[0].serviceName,
@@ -464,7 +482,7 @@ export async function createAppointment(req, res) {
 
     if (appointmentError) throw appointmentError;
 
-    // ✅ PASO 3: Insertar servicios en appointment_services
+    // Insertar servicios en appointment_services
     const appointmentServicesData = servicesList.map((service, index) => ({
       appointment_id: appointment.id,
       service_id: service.serviceId || null,
@@ -491,7 +509,7 @@ export async function createAppointment(req, res) {
       message: 'Cita creada correctamente',
       appointment: {
         ...appointment,
-        services: servicesList, // Incluir servicios en respuesta
+        services: servicesList,
       },
     });
   } catch (error) {

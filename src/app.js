@@ -13,6 +13,7 @@ import analyticsRoutes from './routes/analyticsRoutes.js';
 import webhooksRoutes from './routes/webhooksRoutes.js';
 import settingsRoutes from './routes/settingsRoutes.js';
 import whatsappRoutes from './routes/whatsappRoutes.js';
+import emailRoutes from './routes/emailRoutes.js';
 
 dotenv.config();
 
@@ -40,6 +41,7 @@ app.use('/api/waitlist', waitlistRoutes);
 app.use('/api/analytics', analyticsRoutes);
 app.use('/api/webhooks', webhooksRoutes);
 app.use('/api/whatsapp', whatsappRoutes);
+app.use('/api/emails', emailRoutes);
 
 // Error handler 
 app.use((err, req, res, next) => {

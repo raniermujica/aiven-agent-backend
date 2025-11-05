@@ -12,28 +12,55 @@ export async function initializeWhatsApp(req, res) {
     
     console.log(`[WhatsApp] Inicializando para: ${businessSlug}`);
     
-    // Verificar si la instancia ya existe
     const exists = await evolutionService.instanceExists(businessSlug);
     
     if (exists) {
-      console.log(`[WhatsApp] Instancia ya existe, obteniendo QR`);
-      // Si existe, solo obtener el QR
-      const qr = await evolutionService.getQRCode(businessSlug);
+      console.log(`[WhatsApp] Instancia ${businessSlug} ya existe. Verificando estado.`);
+      const status = await evolutionService.getConnectionStatus(businessSlug);
       
-      return res.json({
-        success: true,
-        qrCode: qr.qrCode,
-        message: 'Escanea el código QR con WhatsApp Business'
-      });
+      if (status.isConnected) {
+        console.log(`[WhatsApp] Instancia ${businessSlug} ya está conectada.`);
+        return res.json({
+          success: true,
+          message: 'WhatsApp ya está conectado',
+          isConnected: true
+        });
+      } else {
+        console.log(`[WhatsApp] Instancia ${businessSlug} existe pero está desconectada. Obteniendo QR.`);
+        const qr = await evolutionService.getQRCode(businessSlug);
+        
+        if (!qr.qrCode) {
+           console.warn('[WhatsApp] getQRCode no devolvió un QR. La instancia puede estar "connecting".');
+           return res.json({
+              success: true,
+              message: 'La instancia está conectando. Espera un momento y refresca el estado.',
+              isConnecting: true,
+              qrCode: null
+           });
+        }
+
+        return res.json({
+          success: true,
+          qrCode: qr.qrCode,
+          message: 'Escanea el código QR con WhatsApp Business',
+          existingInstance: true
+        });
+      }
     }
     
-    // 1. Crear instancia en Evolution API
+    // 3. Si no existe, crearla
+    console.log(`[WhatsApp] Instancia ${businessSlug} no existe. Creando...`);
+    
     const instance = await evolutionService.createInstance(businessSlug);
     
-    // 2. Configurar webhook
-    await evolutionService.setWebhook(businessSlug);
+    console.log('[WhatsApp] Esperando a que la instancia esté lista...');
+    await new Promise(resolve => setTimeout(resolve, 3000));
     
-    // 3. Guardar en BD que la integración está activa
+    console.log('[WhatsApp] Configurando webhook en segundo plano...');
+    evolutionService.setWebhook(businessSlug).catch(err => {
+      console.error(`[WhatsApp] Error grave configurando webhook en segundo plano: ${err.message}`);
+    });
+    
     const { error } = await supabase
       .from('restaurant_integrations')
       .upsert({
@@ -47,17 +74,17 @@ export async function initializeWhatsApp(req, res) {
       }, {
         onConflict: 'restaurant_id,integration_type'
       });
-    
+      
     if (error) {
       console.error('[WhatsApp] Error guardando en BD:', error);
     }
     
-    res.json({
+    return res.json({
       success: true,
       qrCode: instance.qrCode,
       message: 'Escanea el código QR con WhatsApp Business'
     });
-    
+
   } catch (error) {
     console.error('[WhatsApp] Error en initializeWhatsApp:', error);
     res.status(500).json({ 
@@ -66,7 +93,6 @@ export async function initializeWhatsApp(req, res) {
     });
   }
 }
-
 /**
  * Obtener estado de conexión
  * GET /api/whatsapp/status
@@ -75,11 +101,28 @@ export async function getConnectionStatus(req, res) {
   try {
     const businessSlug = req.business.slug;
     
+    // 1. Obtener estado básico (como antes)
     const status = await evolutionService.getConnectionStatus(businessSlug);
     
+    let details = {
+      instanceName: businessSlug, // Devolver el slug como nombre por defecto
+      phoneNumber: null 
+    };
+
+    // 2. Si está conectado, obtener más detalles
+    if (status.isConnected) {
+      const instanceDetails = await evolutionService.getInstanceDetails(businessSlug);
+      if (instanceDetails) {
+        details.phoneNumber = instanceDetails.phoneNumber;
+        details.instanceName = instanceDetails.instanceName; // Actualizar con el nombre real
+      }
+    }
+    
+    // 3. Enviar respuesta combinada al frontend
     res.json({
       success: true,
-      ...status
+      ...status,  // Esto incluye { isConnected, state }
+      ...details // Esto incluye { instanceName, phoneNumber }
     });
     
   } catch (error) {
