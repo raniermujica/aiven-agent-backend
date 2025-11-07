@@ -7,7 +7,7 @@ export async function getSettings(req, res) {
 
     const { data: restaurant, error } = await supabase
       .from('restaurants')
-      .select('*')
+      .select('*') // <-- Esto ya trae la columna 'config'
       .eq('id', restaurantId)
       .single();
 
@@ -31,6 +31,7 @@ export async function getSettings(req, res) {
         description: restaurant.description,
         whatsappNumber: restaurant.whatsapp_number,
         isAiPaused: restaurant.is_ai_paused,
+        config: restaurant.config || {}, // Enviar el config (o un objeto vacío si es null)
       },
     });
   } catch (error) {
@@ -57,10 +58,11 @@ export async function updateSettings(req, res) {
       businessHours,
       description,
       whatsappNumber,
+      config, // <--- ¡CORRECCIÓN 2: Recibir el config!
     } = req.body;
 
     const updateData = {};
-    
+
     if (name !== undefined) updateData.name = name;
     if (email !== undefined) updateData.email = email;
     if (phone !== undefined) updateData.phone = phone;
@@ -74,6 +76,9 @@ export async function updateSettings(req, res) {
     if (businessHours !== undefined) updateData.business_hours = businessHours;
     if (description !== undefined) updateData.description = description;
     if (whatsappNumber !== undefined) updateData.whatsapp_number = whatsappNumber;
+
+    // <--- ¡CORRECCIÓN 3: Guardar el config!
+    if (config !== undefined) updateData.config = config;
 
     updateData.updated_at = new Date().toISOString();
 
@@ -180,7 +185,7 @@ export async function updateBusinessUser(req, res) {
     const { name, email, phone, role, isActive } = req.body;
 
     const updateData = {};
-    
+
     if (name !== undefined) updateData.name = name;
     if (email !== undefined) updateData.email = email;
     if (phone !== undefined) updateData.phone = phone;
