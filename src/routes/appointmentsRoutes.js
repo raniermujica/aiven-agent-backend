@@ -12,10 +12,24 @@ import {
 } from '../controllers/appointmentsController.js';
 import { authenticateToken, requireRole } from '../middleware/auth.js';
 import { loadBusinessFromSlug, validateBusinessAccess } from '../middleware/tenant.js';
+import { authenticateAgent } from '../middleware/authAgent.js';
 
 const router = express.Router();
 
-// Todas las rutas requieren autenticación + acceso al negocio
+router.post(
+  '/agent/check-availability',
+  loadBusinessFromSlug,   
+  authenticateAgent, 
+  checkAvailability 
+);
+
+router.post(
+  '/agent/create',
+  loadBusinessFromSlug,
+  authenticateAgent,
+  createAppointment
+);
+
 router.use(authenticateToken);
 router.use(loadBusinessFromSlug);
 router.use(validateBusinessAccess);
@@ -32,10 +46,10 @@ router.get('/stats', getAppointmentStats);
 // GET /api/appointments/:appointmentId/details
 router.get('/:appointmentId/details', getAppointmentById);
 
-// POST /api/appointments/check-availability
+// POST /api/appointments/check-availability (Usado por el modal del Panel)
 router.post('/check-availability', checkAvailability);
 
-// POST /api/appointments
+// POST /api/appointments (Usado por el modal del Panel)
 router.post('/', requireRole('ADMIN', 'MANAGER', 'STAFF'), createAppointment);
 
 // PATCH /api/appointments/:appointmentId/status

@@ -1,5 +1,6 @@
 import { supabase } from '../config/database.js';
 import { createRequire } from 'module';
+import emailService from '../services/emailService.js';
 const require = createRequire(import.meta.url);
 
 const { fromZonedTime, toZonedTime, format } = require('date-fns-tz');
@@ -98,6 +99,68 @@ async function checkSlotCapacity(restaurantId, requestedStartUTC, totalDuration)
     console.error('Error en checkSlotCapacity:', error);
     return { available: false, reason: 'Error interno del servidor', conflicting_appointment: null };
   }
+}
+
+// ================================================================
+// HELPER: Busca los siguientes 3 slots disponibles
+// ================================================================
+
+async function findNextAvailableSlots(
+  restaurantId,
+  totalDuration,
+  daySchedule,
+  dateStr,
+  businessTimezone,
+  requestedStartUTC
+) {
+  const suggestions = [];
+  const MAX_SUGGESTIONS = 3;
+  const SLOT_INCREMENT_MINUTES = 30; // Buscar cada 30 min
+
+  let currentSlotUTC = new Date(requestedStartUTC);
+  const closeTime = daySchedule.close_time.substring(0, 5); // ej. "20:00"
+
+  console.log(`[Find Slots] Buscando ${MAX_SUGGESTIONS} slots libres a partir de ${currentSlotUTC.toISOString()}`);
+
+  while (suggestions.length < MAX_SUGGESTIONS) {
+    // Avanzar al siguiente slot (ej. 15:00 -> 15:30)
+    currentSlotUTC.setMinutes(currentSlotUTC.getMinutes() + SLOT_INCREMENT_MINUTES);
+
+    // --- Validación 1: ¿Se pasa de la hora de cierre? ---
+    const slotEndUTC = new Date(currentSlotUTC.getTime() + (totalDuration * 60000));
+    const slotEndLocal = toZonedTime(slotEndUTC, businessTimezone);
+    const slotEndTimeStr = format(slotEndLocal, 'HH:mm', { timeZone: businessTimezone });
+
+    if (slotEndTimeStr > closeTime) {
+      console.log(`[Find Slots] Búsqueda detenida: ${slotEndTimeStr} supera la hora de cierre (${closeTime})`);
+      break; // Detener la búsqueda si nos pasamos del cierre
+    }
+
+    // --- Validación 2: ¿Tiene capacidad este nuevo slot? ---
+    const capacityCheck = await checkSlotCapacity(
+      restaurantId,
+      currentSlotUTC,
+      totalDuration,
+      dateStr, // Pasamos la fecha local (YYYY-MM-DD)
+      businessTimezone
+    );
+
+    if (capacityCheck.available) {
+      const slotStartTimeLocal = toZonedTime(currentSlotUTC, businessTimezone);
+      const timeStr = format(slotStartTimeLocal, 'HH:mm', { timeZone: businessTimezone });
+      console.log(`[Find Slots] ✅ Slot libre encontrado: ${timeStr}`);
+      suggestions.push(timeStr);
+    } else {
+      console.log(`[Find Slots] ❌ Slot ocupado a las ${format(toZonedTime(currentSlotUTC, businessTimezone), 'HH:mm', { timeZone: businessTimezone })}`);
+    }
+
+    // Seguridad para evitar bucles infinitos (ej. si el día está lleno)
+    if (currentSlotUTC.getHours() > 23) {
+      break;
+    }
+  }
+
+  return suggestions;
 }
 
 // ================================================================
@@ -234,9 +297,6 @@ export async function getTodayAppointments(req, res) {
 // CHECK AVAILABILITY 
 // ================================================================
 
-// ================================================================
-// CHECK AVAILABILITY (MODIFICADO)
-// ================================================================
 export async function checkAvailability(req, res) {
   try {
     const businessId = req.business.id;
@@ -247,15 +307,13 @@ export async function checkAvailability(req, res) {
       : duration_minutes;
 
     if (!date || !time) {
-      return res.status(400).json({
-        error: 'Fecha y hora son requeridas'
-      });
+      return res.status(400).json({ error: 'Fecha y hora son requeridas' });
     }
 
-    // 1. CARGAR TIMEZONE Y CONFIG DEL NEGOCIO
+    // 1. Cargar Timezone y Config
     const { data: business, error: businessError } = await supabase
       .from('restaurants')
-      .select('timezone, config') // <-- MODIFICADO (ya lo tenías)
+      .select('timezone, config')
       .eq('id', businessId)
       .single();
 
@@ -266,10 +324,9 @@ export async function checkAvailability(req, res) {
 
     const businessTimezone = business?.timezone || 'Europe/Madrid';
 
-    // 2. OBTENER REGLA DE HORARIO DEL DÍA (Tu código - sin cambios)
+    // 2. Obtener Regla de Horario
     const requestedDateObj = parseISO(date);
     const dayOfWeek = requestedDateObj.getDay();
-
     const { data: dayRules, error: rulesError } = await supabase
       .from('availability_rules')
       .select('open_time, close_time, is_closed')
@@ -280,7 +337,7 @@ export async function checkAvailability(req, res) {
       .limit(1)
       .single();
 
-    if (rulesError && rulesError.code !== 'PGRST116') { // No rows found
+    if (rulesError && rulesError.code !== 'PGRST116') {
       console.error('Error cargando reglas de disponibilidad:', rulesError);
       return res.status(500).json({ error: 'Error cargando reglas de disponibilidad' });
     }
@@ -288,16 +345,15 @@ export async function checkAvailability(req, res) {
     const daySchedule = dayRules || { is_closed: true };
 
     // =======================================================================
-    // ✅ PASO 1: VERIFICAR HORARIOS DEL NEGOCIO (Tu código - sin cambios)
+    // PASO 1: VERIFICAR HORARIOS DEL NEGOCIO (Validación de Horas)
     // =======================================================================
-
     if (daySchedule.is_closed) {
       const dayNameES = ['domingos', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábados'];
       return res.json({
         available: false,
         is_within_business_hours: false,
         business_hours_message: `El negocio está cerrado los ${dayNameES[dayOfWeek]}`,
-        conflicting_appointment: null,
+        suggested_times: [] // 💡 Devolvemos array vacío
       });
     }
 
@@ -305,12 +361,7 @@ export async function checkAvailability(req, res) {
     const closeTime = daySchedule.close_time;
 
     if (!openTime || !closeTime) {
-      return res.json({
-        available: false,
-        is_within_business_hours: false,
-        business_hours_message: 'Horario no configurado para este día',
-        conflicting_appointment: null,
-      });
+      return res.json({ available: false, is_within_business_hours: false, business_hours_message: 'Horario no configurado para este día', suggested_times: [] });
     }
 
     const requestedTimeStr = time.substring(0, 5);
@@ -318,65 +369,59 @@ export async function checkAvailability(req, res) {
     const closeTimeNormalized = closeTime.substring(0, 5);
 
     if (requestedTimeStr < openTimeNormalized) {
-      return res.json({
-        available: false,
-        is_within_business_hours: false,
-        business_hours_message: `El horario de atención empieza a las ${openTimeNormalized}`,
-        conflicting_appointment: null,
-      });
+      return res.json({ available: false, is_within_business_hours: false, business_hours_message: `El horario de atención empieza a las ${openTimeNormalized}`, suggested_times: [] });
     }
 
-    // 3. CALCULAR HORA DE FIN DE CITA EN HORA LOCAL
     const requestedStartUTC = getUTCFromLocal(date, time, businessTimezone);
     const requestedEndUTC = new Date(requestedStartUTC.getTime() + (totalDuration * 60 * 1000));
-
     const requestedEndLocal = toZonedTime(requestedEndUTC, businessTimezone);
     const endTimeStr = format(requestedEndLocal, 'HH:mm', { timeZone: businessTimezone });
-
     if (endTimeStr > closeTimeNormalized) {
-      return res.json({
-        available: false,
-        is_within_business_hours: false,
-        business_hours_message: `La cita terminaría a las ${endTimeStr}, después del horario de cierre (${closeTimeNormalized})`,
-        conflicting_appointment: null,
-      });
+      return res.json({ available: false, is_within_business_hours: false, business_hours_message: `La cita terminaría a las ${endTimeStr}, después del cierre (${closeTimeNormalized})`, suggested_times: [] });
     }
 
     // =======================================================================
-    // ✅ PASO 2: VERIFICAR CONFLICTOS (Lógica 💡 MODIFICADA)
+    // PASO 2: VERIFICAR CONFLICTOS (Lógica 💡 MODIFICADA)
     // =======================================================================
 
-    // Llamamos al nuevo helper centralizado
+    // Llamamos al helper de capacidad
     const availabilityCheck = await checkSlotCapacity(
       businessId,
       requestedStartUTC,
-      totalDuration
+      totalDuration,
+      date,
+      businessTimezone
     );
 
-    // Formatear la respuesta del helper
-    let conflictingAppointmentData = null;
-    if (availabilityCheck.conflicting_appointment) {
-      const conflict = availabilityCheck.conflicting_appointment;
-      const conflictStartUTC = new Date(conflict.appointment_time);
+    // --- 💡 INICIO DE LA MODIFICACIÓN ---
+    // Si NO está disponible, intentamos buscar alternativas
+    if (!availabilityCheck.available) {
+      const suggestedTimes = await findNextAvailableSlots(
+        businessId,
+        totalDuration,
+        daySchedule,
+        date,
+        businessTimezone,
+        requestedStartUTC // Empezamos a buscar desde la hora que falló
+      );
 
-      conflictingAppointmentData = {
-        id: conflict.id,
-        client_name: conflict.client_name,
-        service_name: conflict.service_name,
-        // Devolvemos la hora en el timezone del negocio
-        time: format(toZonedTime(conflictStartUTC, businessTimezone), 'HH:mm', { timeZone: businessTimezone }),
-        duration: conflict.duration_minutes
-      };
+      return res.json({
+        available: false,
+        has_conflict: true,
+        is_within_business_hours: true,
+        business_hours_message: availabilityCheck.reason,
+        suggested_times: suggestedTimes // Devolvemos las sugerencias
+      });
     }
+    // --- FIN DE LA MODIFICACIÓN ---
 
+    // Si SÍ está disponible (el código de abajo solo se ejecuta si hay hueco)
     res.json({
-      available: availabilityCheck.available,
-      has_conflict: !availabilityCheck.available, // Inverso de 'available'
+      available: true,
+      has_conflict: false,
       is_within_business_hours: true,
-      business_hours_message: availabilityCheck.available ? null : availabilityCheck.reason,
-      conflicting_appointment: conflictingAppointmentData,
-      // Opcional: puedes eliminar esta línea si ya no la usas en el frontend
-      total_appointments_that_day: 0,
+      business_hours_message: 'Slot disponible',
+      suggested_times: []
     });
 
   } catch (error) {
@@ -563,6 +608,45 @@ export async function createAppointment(req, res) {
     }
 
     console.log('✅ Cita creada con', servicesList.length, 'servicios');
+
+    if (servicesError) {
+      console.error('Error insertando servicios:', servicesError);
+      // Rollback: eliminar la cita si falla
+      await supabase.from('appointments').delete().eq('id', appointment.id);
+      throw servicesError;
+    }
+
+    console.log('✅ Cita creada con', servicesList.length, 'servicios');
+
+    if (clientEmail) {
+      console.log(`[Email] Preparando confirmación para: ${clientEmail}`);
+
+      const emailData = {
+        customer_email: clientEmail,
+        customer_name: clientName,
+        appointment_date: scheduledDate,
+        appointment_time: appointmentTime,
+        services: servicesList.map(s => ({
+          name: s.serviceName,
+          duration_minutes: s.durationMinutes
+        })),
+        business_name: req.business.name,
+        business_phone: req.business.phone,
+        business_address: req.business.address,
+        business_email: req.business.email, // El 'replyTo'
+        total_duration: totalDuration,
+        appointment_id: appointment.id
+      };
+
+      // Llamar al servicio de email (sin 'await' para no bloquear)
+      emailService.sendAppointmentConfirmation(emailData).catch(emailError => {
+        // Si el email falla, solo lo logueamos. La cita ya se creó.
+        console.error(`[Email] ⚠️ Error enviando email (cita ${appointment.id} ya creada):`, emailError);
+      });
+
+    } else {
+      console.log('[Email] No se envía email (cliente sin email registrado)');
+    }
 
     res.status(201).json({
       message: 'Cita creada correctamente',

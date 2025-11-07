@@ -20,7 +20,8 @@
     "cors": "^2.8.5",
     "dotenv": "^17.2.3",
     "express": "^5.1.0",
-    "jsonwebtoken": "^9.0.2"
+    "jsonwebtoken": "^9.0.2",
+    "ngrok": "^5.0.0-beta.2"
   },
   "devDependencies": {
     "cross-env": "^10.1.0",
