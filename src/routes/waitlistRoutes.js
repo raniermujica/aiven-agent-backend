@@ -4,7 +4,7 @@ import {
   addToWaitlist,
   updateWaitlistStatus,
   getWaitlistStats,
-} from '../controllers/waitListController.js';
+} from '../controllers/waitlistController.js';
 import { authenticateToken, requireRole } from '../middleware/auth.js';
 import { loadBusinessFromSlug, validateBusinessAccess } from '../middleware/tenant.js';
 
