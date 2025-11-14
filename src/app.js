@@ -14,13 +14,46 @@ import webhooksRoutes from './routes/webhooksRoutes.js';
 import settingsRoutes from './routes/settingsRoutes.js';
 import whatsappRoutes from './routes/whatsappRoutes.js';
 import emailRoutes from './routes/emailRoutes.js';
+import contactRoutes from './routes/contactRoutes.js';
 
 dotenv.config();
 
 const app = express();
 
+const N8N_URL = process.env.N8N_URL; 
+const VERCEL_FRONTEND_URL = process.env.VERCEL_FRONTEND_URL; 
+
+// Lista de orígenes en los que confiamos
+const whitelist = [
+  'https://www.agentpaul.es',
+  N8N_URL,
+  VERCEL_FRONTEND_URL, 
+  'http://localhost:5173'
+];
+
+const corsOptions = {
+  origin: function (origin, callback) {
+    if (whitelist.indexOf(origin) !== -1 || !origin) {
+      callback(null, true);
+    } else {
+      console.warn(`❌ CORS: Origen no permitido: ${origin}`);
+      callback(new Error('No permitido por CORS'));
+    }
+  }
+};
+
+app.use(cors(corsOptions)); 
+
+app.use(express.json());
+app.use(express.urlencoded({ extended: true })); 
+
+// Health check 
+app.get('/health', (req, res) => {
+ res.json({ status: 'ok', message: 'Backend multi-tenant funcionando' });
+});
+
 // Middleware 
-app.use(cors());
+// app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true })); 
 
@@ -42,6 +75,7 @@ app.use('/api/analytics', analyticsRoutes);
 app.use('/api/webhooks', webhooksRoutes);
 app.use('/api/whatsapp', whatsappRoutes);
 app.use('/api/emails', emailRoutes);
+app.use('/api/contact', contactRoutes);
 
 // Error handler 
 app.use((err, req, res, next) => {
