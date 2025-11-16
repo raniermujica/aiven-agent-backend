@@ -28,7 +28,8 @@ const whitelist = [
   'https://www.agentpaul.es',
   N8N_URL,
   VERCEL_FRONTEND_URL, 
-  'http://localhost:5173'
+  'http://localhost:5173',
+  'http://localhost:5174'
 ];
 
 const corsOptions = {
