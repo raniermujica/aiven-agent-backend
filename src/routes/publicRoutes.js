@@ -123,6 +123,7 @@ router.post('/:businessSlug/appointments', async (req, res) => {
         restaurant_id: restaurant.id,
         customer_id: customerId,
         service_id: serviceId,
+        scheduled_date: appointmentTime, 
         appointment_time: appointmentTime,
         client_name: customerName,
         client_phone: customerPhone,
