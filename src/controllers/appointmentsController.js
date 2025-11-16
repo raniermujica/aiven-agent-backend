@@ -310,7 +310,7 @@ export async function checkAvailability(req, res) {
       return res.status(400).json({ error: 'Fecha y hora son requeridas' });
     }
 
-    // 1. Cargar Timezone
+    // Cargar timezone
     const { data: business, error: businessError } = await supabase
       .from('restaurants')
       .select('timezone')
@@ -322,12 +322,11 @@ export async function checkAvailability(req, res) {
       return res.status(500).json({ error: 'Error cargando configuración del negocio' });
     }
 
-    const businessTimezone = business?.timezone || 'Europe/Madrid';
-
-    // 2. Obtener Regla de Horario
-    const requestedDateObj = new Date(date);
+    const timezone = business?.timezone || 'Europe/Madrid';
+    const requestedDateObj = parseISO(date);
     const dayOfWeek = requestedDateObj.getDay();
-    
+
+    // Obtener reglas
     const { data: dayRules, error: rulesError } = await supabase
       .from('availability_rules')
       .select('open_time, close_time, is_closed, max_reservations_per_slot')
@@ -344,7 +343,6 @@ export async function checkAvailability(req, res) {
 
     const daySchedule = dayRules || { is_closed: true };
 
-    // Verificar si está cerrado
     if (daySchedule.is_closed) {
       const dayNames = ['domingos', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábados'];
       return res.json({
@@ -367,12 +365,11 @@ export async function checkAvailability(req, res) {
       });
     }
 
-    // Normalizar horarios
+    // Verificar horario de apertura/cierre
     const [openHour, openMinute] = openTime.split(':').map(Number);
     const [closeHour, closeMinute] = closeTime.split(':').map(Number);
     const [requestedHour, requestedMinute] = time.split(':').map(Number);
 
-    // Verificar que está dentro del horario
     const requestedMinutes = requestedHour * 60 + requestedMinute;
     const openMinutes = openHour * 60 + openMinute;
     const closeMinutes = closeHour * 60 + closeMinute;
@@ -386,7 +383,6 @@ export async function checkAvailability(req, res) {
       });
     }
 
-    // Verificar que el servicio termina antes del cierre
     const serviceEndMinutes = requestedMinutes + totalDuration;
     if (serviceEndMinutes > closeMinutes) {
       return res.json({
@@ -397,63 +393,70 @@ export async function checkAvailability(req, res) {
       });
     }
 
-    // Obtener citas existentes
-    const startOfDay = new Date(date + 'T00:00:00Z');
-    const endOfDay = new Date(date + 'T23:59:59Z');
+    // Obtener citas del día con timezone
+    const startOfDayLocal = new Date(date + 'T00:00:00');
+    const endOfDayLocal = new Date(date + 'T23:59:59');
+    
+    const startOfDayUTC = fromZonedTime(startOfDayLocal, timezone);
+    const endOfDayUTC = fromZonedTime(endOfDayLocal, timezone);
 
     const { data: appointments, error: appointmentsError } = await supabase
       .from('appointments')
       .select('appointment_time, duration_minutes')
       .eq('restaurant_id', businessId)
-      .gte('appointment_time', startOfDay.toISOString())
-      .lte('appointment_time', endOfDay.toISOString())
+      .gte('appointment_time', startOfDayUTC.toISOString())
+      .lte('appointment_time', endOfDayUTC.toISOString())
       .in('status', ['confirmado', 'pendiente']);
 
     if (appointmentsError) {
       console.error('Error obteniendo citas:', appointmentsError);
     }
 
-    // Crear timestamp del slot solicitado
-    const requestedStart = new Date(date + `T${time}:00Z`);
-    const requestedEnd = new Date(requestedStart.getTime() + totalDuration * 60000);
+    // Convertir citas de UTC a hora local
+    const busyBlocks = (appointments || []).map(apt => {
+      const startUTC = new Date(apt.appointment_time);
+      const startLocal = toZonedTime(startUTC, timezone);
+      const endLocal = new Date(startLocal.getTime() + (apt.duration_minutes || 60) * 60000);
+      return { start: startLocal, end: endLocal };
+    });
+
+    // Crear timestamp del slot solicitado en hora local
+    const requestedStartLocal = new Date(date);
+    requestedStartLocal.setHours(requestedHour, requestedMinute, 0, 0);
+    const requestedEndLocal = new Date(requestedStartLocal.getTime() + totalDuration * 60000);
 
     // Contar superposiciones
-    const overlappingAppointments = (appointments || []).filter(apt => {
-      const aptStart = new Date(apt.appointment_time);
-      const aptEnd = new Date(aptStart.getTime() + (apt.duration_minutes || 60) * 60000);
-
+    const overlappingAppointments = busyBlocks.filter(block => {
       return (
-        (requestedStart >= aptStart && requestedStart < aptEnd) ||
-        (requestedEnd > aptStart && requestedEnd <= aptEnd) ||
-        (requestedStart <= aptStart && requestedEnd >= aptEnd)
+        (requestedStartLocal >= block.start && requestedStartLocal < block.end) ||
+        (requestedEndLocal > block.start && requestedEndLocal <= block.end) ||
+        (requestedStartLocal <= block.start && requestedEndLocal >= block.end)
       );
     }).length;
 
     const maxCapacity = daySchedule.max_reservations_per_slot || 1;
 
-    // Verificar disponibilidad
     if (overlappingAppointments >= maxCapacity) {
       // Buscar slots sugeridos
       const suggestedTimes = [];
       const SLOT_INTERVAL = 15;
       
-      let currentTime = new Date(date + `T${openTime}`);
-      const closeDateTime = new Date(date + `T${closeTime}`);
+      let currentTime = new Date(date);
+      currentTime.setHours(openHour, openMinute, 0, 0);
+      
+      const closeDateTime = new Date(date);
+      closeDateTime.setHours(closeHour, closeMinute, 0, 0);
 
       while (currentTime < closeDateTime && suggestedTimes.length < 5) {
         const serviceEnd = new Date(currentTime.getTime() + totalDuration * 60000);
         
         if (serviceEnd > closeDateTime) break;
 
-        // Contar superposiciones en este slot
-        const slotOverlaps = (appointments || []).filter(apt => {
-          const aptStart = new Date(apt.appointment_time);
-          const aptEnd = new Date(aptStart.getTime() + (apt.duration_minutes || 60) * 60000);
-
+        const slotOverlaps = busyBlocks.filter(block => {
           return (
-            (currentTime >= aptStart && currentTime < aptEnd) ||
-            (serviceEnd > aptStart && serviceEnd <= aptEnd) ||
-            (currentTime <= aptStart && serviceEnd >= aptEnd)
+            (currentTime >= block.start && currentTime < block.end) ||
+            (serviceEnd > block.start && serviceEnd <= block.end) ||
+            (currentTime <= block.start && serviceEnd >= block.end)
           );
         }).length;
 
@@ -475,7 +478,6 @@ export async function checkAvailability(req, res) {
       });
     }
 
-    // Slot disponible
     res.json({
       available: true,
       has_conflict: false,

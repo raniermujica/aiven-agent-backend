@@ -1,6 +1,10 @@
 import express from 'express';
 import { supabase } from '../config/database.js';
 import { sendConfirmationEmail } from '../controllers/emailController.js';
+import { createRequire } from 'module';
+
+const require = createRequire(import.meta.url);
+const { fromZonedTime, toZonedTime } = require('date-fns-tz');
 
 const router = express.Router();
 
@@ -70,10 +74,10 @@ router.post('/:businessSlug/check-availability', async (req, res) => {
 
     console.log('[Availability] Checking for:', { businessSlug, date, durationMinutes });
 
-    // Obtener restaurant por slug
+    // Obtener restaurant
     const { data: restaurant, error: restaurantError } = await supabase
       .from('restaurants')
-      .select('id')
+      .select('id, timezone')
       .eq('slug', businessSlug)
       .single();
 
@@ -81,10 +85,11 @@ router.post('/:businessSlug/check-availability', async (req, res) => {
       return res.status(404).json({ error: 'Negocio no encontrado' });
     }
 
-    const requestedDate = new Date(date + 'T00:00:00');
-    const dayOfWeek = requestedDate.getDay();
+    const timezone = restaurant.timezone || 'Europe/Madrid';
+    const requestedDateObj = new Date(date + 'T00:00:00');
+    const dayOfWeek = requestedDateObj.getDay();
 
-    // Buscar reglas de disponibilidad
+    // Obtener reglas de disponibilidad
     const { data: availabilityRules, error: rulesError } = await supabase
       .from('availability_rules')
       .select('*')
@@ -92,22 +97,12 @@ router.post('/:businessSlug/check-availability', async (req, res) => {
       .or(`specific_date.eq.${date},and(day_of_week.eq.${dayOfWeek},specific_date.is.null)`)
       .order('priority', { ascending: false });
 
-    if (rulesError) {
-      console.error('[Availability] Error getting rules:', rulesError);
-      return res.status(500).json({ error: 'Error al obtener disponibilidad' });
-    }
-
-    if (!availabilityRules || availabilityRules.length === 0) {
+    if (rulesError || !availabilityRules || availabilityRules.length === 0) {
       console.log('[Availability] No rules found');
       return res.json({ availableSlots: [] });
     }
 
     const rule = availabilityRules[0];
-    console.log('[Availability] Using rule:', { 
-      open: rule.open_time, 
-      close: rule.close_time,
-      maxSlots: rule.max_reservations_per_slot 
-    });
 
     if (rule.is_closed) {
       return res.json({ availableSlots: [] });
@@ -117,19 +112,26 @@ router.post('/:businessSlug/check-availability', async (req, res) => {
     const [openHour, openMinute] = rule.open_time.split(':').map(Number);
     const [closeHour, closeMinute] = rule.close_time.split(':').map(Number);
 
-    const openTime = new Date(date + `T${rule.open_time}`);
-    const closeTime = new Date(date + `T${rule.close_time}`);
+    // Crear timestamps en hora local
+    const openTimeLocal = new Date(date);
+    openTimeLocal.setHours(openHour, openMinute, 0, 0);
+    
+    const closeTimeLocal = new Date(date);
+    closeTimeLocal.setHours(closeHour, closeMinute, 0, 0);
 
-    // Obtener citas existentes
-    const startOfDay = new Date(date + 'T00:00:00Z');
-    const endOfDay = new Date(date + 'T23:59:59Z');
+    // Obtener citas del día (consulta en UTC)
+    const startOfDayLocal = new Date(date + 'T00:00:00');
+    const endOfDayLocal = new Date(date + 'T23:59:59');
+    
+    const startOfDayUTC = fromZonedTime(startOfDayLocal, timezone);
+    const endOfDayUTC = fromZonedTime(endOfDayLocal, timezone);
 
     const { data: appointments, error: appointmentsError } = await supabase
       .from('appointments')
       .select('appointment_time, duration_minutes')
       .eq('restaurant_id', restaurant.id)
-      .gte('appointment_time', startOfDay.toISOString())
-      .lte('appointment_time', endOfDay.toISOString())
+      .gte('appointment_time', startOfDayUTC.toISOString())
+      .lte('appointment_time', endOfDayUTC.toISOString())
       .in('status', ['confirmado', 'pendiente']);
 
     if (appointmentsError) {
@@ -138,52 +140,43 @@ router.post('/:businessSlug/check-availability', async (req, res) => {
 
     console.log('[Availability] Found appointments:', appointments?.length || 0);
 
-    // Convertir citas a bloques ocupados
+    // Convertir citas de UTC a hora local
     const busyBlocks = (appointments || []).map(apt => {
-      const start = new Date(apt.appointment_time);
-      const end = new Date(start.getTime() + (apt.duration_minutes || 60) * 60000);
-      return { start, end };
+      const startUTC = new Date(apt.appointment_time);
+      const startLocal = toZonedTime(startUTC, timezone);
+      const endLocal = new Date(startLocal.getTime() + (apt.duration_minutes || 60) * 60000);
+      return { start: startLocal, end: endLocal };
     });
 
-    // Capacidad máxima por slot (default 1 si es null)
     const maxCapacity = rule.max_reservations_per_slot || 1;
-
-    // Generar slots cada 15 minutos
     const availableSlots = [];
     const SLOT_INTERVAL = 15; // minutos
     
-    let currentTime = new Date(openTime);
+    let currentTime = new Date(openTimeLocal);
 
-    while (currentTime < closeTime) {
-      // Calcular fin del servicio solicitado
+    while (currentTime < closeTimeLocal) {
       const serviceEndTime = new Date(currentTime.getTime() + durationMinutes * 60000);
       
-      // Verificar que el servicio cabe antes del cierre
-      if (serviceEndTime > closeTime) {
+      if (serviceEndTime > closeTimeLocal) {
         break;
       }
 
-      // Contar cuántas citas se superponen con este slot
+      // Contar superposiciones en hora local
       const overlappingAppointments = busyBlocks.filter(block => {
-        // Hay superposición si los rangos se cruzan
         return (
-          (currentTime >= block.start && currentTime < block.end) || // Slot empieza durante cita
-          (serviceEndTime > block.start && serviceEndTime <= block.end) || // Slot termina durante cita
-          (currentTime <= block.start && serviceEndTime >= block.end) // Slot envuelve cita completa
+          (currentTime >= block.start && currentTime < block.end) ||
+          (serviceEndTime > block.start && serviceEndTime <= block.end) ||
+          (currentTime <= block.start && serviceEndTime >= block.end)
         );
       }).length;
 
-      // El slot está disponible si no se alcanzó la capacidad máxima
       if (overlappingAppointments < maxCapacity) {
         const hours = currentTime.getHours();
         const minutes = currentTime.getMinutes();
         const timeString = `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`;
         availableSlots.push(timeString);
-      } else {
-        console.log(`[Availability] Slot ${currentTime.toISOString().substring(11, 16)} full: ${overlappingAppointments}/${maxCapacity}`);
       }
 
-      // Avanzar 15 minutos
       currentTime = new Date(currentTime.getTime() + SLOT_INTERVAL * 60000);
     }
 
