@@ -1,5 +1,6 @@
 import express from 'express';
 import { supabase } from '../config/database.js';
+import { sendConfirmationEmail } from '../controllers/emailController.js';
 
 const router = express.Router();
 
@@ -74,17 +75,17 @@ router.post('/:businessSlug/check-availability', async (req, res) => {
 router.post('/:businessSlug/appointments', async (req, res) => {
   try {
     const { businessSlug } = req.params;
-    const { 
-      clientName, 
-      clientPhone, 
-      clientEmail, 
-      serviceId, 
+    const {
+      clientName,
+      clientPhone,
+      clientEmail,
+      serviceId,
       serviceName,
       durationMinutes,
-      scheduledDate, 
+      scheduledDate,
       appointmentTime,
       services,
-      notes 
+      notes
     } = req.body;
 
     // Obtener restaurant por slug
@@ -139,15 +140,35 @@ router.post('/:businessSlug/appointments', async (req, res) => {
         client_name: clientName,
         client_phone: clientPhone,
         client_email: clientEmail,
-        status: 'pendiente',
-        notes: notes || null,
+        status: 'confirmado',
+        notes: notes ? `${notes}\n\n[Agendado desde enlace público]` : '[Agendado desde enlace público]',
       })
       .select('*')
       .single();
 
     if (appointmentError) throw appointmentError;
 
-    res.status(201).json({ 
+    try {
+      // Crear un objeto req/res mock para la función del controller
+      const mockReq = {
+        params: { appointmentId: appointment.id }
+      };
+
+      const mockRes = {
+        status: (code) => ({
+          json: (data) => console.log(`Email response ${code}:`, data)
+        }),
+        json: (data) => console.log('Email response:', data)
+      };
+
+      await sendConfirmationEmail(mockReq, mockRes);
+      console.log('✅ Email de confirmación enviado');
+    } catch (emailError) {
+      console.error('❌ Error enviando email:', emailError);
+      // No fallar la cita si el email falla
+    }
+
+    res.status(201).json({
       success: true,
       appointment: {
         id: appointment.id,
@@ -159,6 +180,7 @@ router.post('/:businessSlug/appointments', async (req, res) => {
         customer_email: appointment.client_email,
         date: appointment.scheduled_date,
         time: appointmentTime,
+        status: appointment.status,
       }
     });
   } catch (error) {

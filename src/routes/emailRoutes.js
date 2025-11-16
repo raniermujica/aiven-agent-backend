@@ -7,8 +7,8 @@ import { authenticateToken } from '../middleware/auth.js';
 
 const router = express.Router();
 
-// Enviar confirmación de cita (requiere autenticación)
-router.post('/send-confirmation/:appointmentId', authenticateToken, sendConfirmationEmail);
+// Enviar confirmación de cita (no requiere autenticación)
+router.post('/send-confirmation/:appointmentId', sendConfirmationEmail);
 
 // Enviar recordatorios pendientes (cron job - sin auth para permitir servicios externos)
 // TODO: Agregar API key secret para proteger este endpoint
