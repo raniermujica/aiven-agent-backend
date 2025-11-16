@@ -15,6 +15,7 @@ import settingsRoutes from './routes/settingsRoutes.js';
 import whatsappRoutes from './routes/whatsappRoutes.js';
 import emailRoutes from './routes/emailRoutes.js';
 import contactRoutes from './routes/contactRoutes.js';
+import publicRoutes from './routes/publicRoutes.js';
 
 dotenv.config();
 
@@ -62,6 +63,9 @@ app.use(express.urlencoded({ extended: true }));
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', message: 'Backend multi-tenant funcionando' });
 });
+
+// Rutas públicas
+app.use('/api/public', publicRoutes);
 
 // Rutas
 app.use('/api/auth', authRoutes);
