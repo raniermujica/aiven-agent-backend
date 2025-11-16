@@ -72,6 +72,7 @@ router.post('/:businessSlug/check-availability', async (req, res) => {
 });
 
 // POST /api/public/:businessSlug/appointments
+// POST /api/public/:businessSlug/appointments
 router.post('/:businessSlug/appointments', async (req, res) => {
   try {
     const { businessSlug } = req.params;
@@ -148,8 +149,21 @@ router.post('/:businessSlug/appointments', async (req, res) => {
 
     if (appointmentError) throw appointmentError;
 
+    // ← NUEVO: Crear relación en appointment_services
+    const { error: appointmentServiceError } = await supabase
+      .from('appointment_services')
+      .insert({
+        appointment_id: appointment.id,
+        service_id: serviceId,
+      });
+
+    if (appointmentServiceError) {
+      console.error('Error creando appointment_service:', appointmentServiceError);
+      // No fallar si esto falla, solo loguear
+    }
+
+    // ← Enviar email de confirmación
     try {
-      // Crear un objeto req/res mock para la función del controller
       const mockReq = {
         params: { appointmentId: appointment.id }
       };
@@ -165,7 +179,6 @@ router.post('/:businessSlug/appointments', async (req, res) => {
       console.log('✅ Email de confirmación enviado');
     } catch (emailError) {
       console.error('❌ Error enviando email:', emailError);
-      // No fallar la cita si el email falla
     }
 
     res.status(201).json({

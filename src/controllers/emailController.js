@@ -8,9 +8,7 @@ import { supabase } from '../config/database.js';
 export async function sendConfirmationEmail(req, res) {
   try {
     const { appointmentId } = req.params;
-    console.log('[EmailService] 📧 Datos del email:', JSON.stringify(emailData, null, 2));
-
-    console.log(`[Email] Enviando confirmación para cita: ${appointmentId}`);
+     console.log(`[Email] Enviando confirmación para cita: ${appointmentId}`);
 
     // Obtener datos de la cita con servicios
     const { data: appointment, error } = await supabase
@@ -73,6 +71,8 @@ export async function sendConfirmationEmail(req, res) {
       total_duration: appointment.duration_minutes,
       appointment_id: appointment.id
     };
+
+     console.log('[EmailService] 📧 Datos del email:', JSON.stringify(emailData, null, 2));
 
     // Enviar email
     await emailService.sendAppointmentConfirmation(emailData);
