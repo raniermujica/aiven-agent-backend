@@ -8,14 +8,14 @@ router.get('/:businessSlug/services', async (req, res) => {
   try {
     const { businessSlug } = req.params;
 
-    // Obtener business_id por slug
-    const { data: business, error: businessError } = await supabase
-      .from('businesses')
+    // Obtener restaurant por slug
+    const { data: restaurant, error: restaurantError } = await supabase
+      .from('restaurants')
       .select('id')
       .eq('slug', businessSlug)
       .single();
 
-    if (businessError || !business) {
+    if (restaurantError || !restaurant) {
       return res.status(404).json({ error: 'Negocio no encontrado' });
     }
 
@@ -23,7 +23,7 @@ router.get('/:businessSlug/services', async (req, res) => {
     const { data: services, error: servicesError } = await supabase
       .from('services')
       .select('*')
-      .eq('business_id', business.id)
+      .eq('restaurant_id', restaurant.id)
       .eq('is_active', true)
       .order('display_order', { ascending: true });
 
@@ -44,14 +44,14 @@ router.post('/:businessSlug/check-availability', async (req, res) => {
     const { businessSlug } = req.params;
     const { date, serviceId, durationMinutes } = req.body;
 
-    // Obtener business_id por slug
-    const { data: business, error: businessError } = await supabase
-      .from('businesses')
+    // Obtener restaurant por slug
+    const { data: restaurant, error: restaurantError } = await supabase
+      .from('restaurants')
       .select('id')
       .eq('slug', businessSlug)
       .single();
 
-    if (businessError || !business) {
+    if (restaurantError || !restaurant) {
       return res.status(404).json({ error: 'Negocio no encontrado' });
     }
 
@@ -74,16 +74,16 @@ router.post('/:businessSlug/check-availability', async (req, res) => {
 router.post('/:businessSlug/appointments', async (req, res) => {
   try {
     const { businessSlug } = req.params;
-    const { customerName, customerPhone, customerEmail, serviceId, date, time, notes, additionalServices } = req.body;
+    const { customerName, customerPhone, customerEmail, serviceId, date, time, notes } = req.body;
 
-    // Obtener business_id por slug
-    const { data: business, error: businessError } = await supabase
-      .from('businesses')
+    // Obtener restaurant por slug
+    const { data: restaurant, error: restaurantError } = await supabase
+      .from('restaurants')
       .select('id')
       .eq('slug', businessSlug)
       .single();
 
-    if (businessError || !business) {
+    if (restaurantError || !restaurant) {
       return res.status(404).json({ error: 'Negocio no encontrado' });
     }
 
@@ -93,7 +93,7 @@ router.post('/:businessSlug/appointments', async (req, res) => {
       .from('customers')
       .select('id')
       .eq('phone', customerPhone)
-      .eq('business_id', business.id)
+      .eq('restaurant_id', restaurant.id)
       .single();
 
     if (existingCustomer) {
@@ -102,7 +102,7 @@ router.post('/:businessSlug/appointments', async (req, res) => {
       const { data: newCustomer, error: customerError } = await supabase
         .from('customers')
         .insert({
-          business_id: business.id,
+          restaurant_id: restaurant.id,
           name: customerName,
           phone: customerPhone,
           email: customerEmail,
@@ -120,10 +120,13 @@ router.post('/:businessSlug/appointments', async (req, res) => {
     const { data: appointment, error: appointmentError } = await supabase
       .from('appointments')
       .insert({
-        business_id: business.id,
+        restaurant_id: restaurant.id,
         customer_id: customerId,
         service_id: serviceId,
         appointment_time: appointmentTime,
+        client_name: customerName,
+        client_phone: customerPhone,
+        client_email: customerEmail,
         status: 'pendiente',
         notes: notes || null,
       })
@@ -141,11 +144,11 @@ router.post('/:businessSlug/appointments', async (req, res) => {
       appointment: {
         id: appointment.id,
         appointment_time: appointment.appointment_time,
-        service_name: appointment.service.name,
-        duration_minutes: appointment.service.duration_minutes,
-        customer_name: appointment.customer.name,
-        customer_phone: appointment.customer.phone,
-        customer_email: appointment.customer.email,
+        service_name: appointment.service?.name,
+        duration_minutes: appointment.service?.duration_minutes,
+        customer_name: appointment.customer?.name || appointment.client_name,
+        customer_phone: appointment.customer?.phone || appointment.client_phone,
+        customer_email: appointment.customer?.email || appointment.client_email,
       }
     });
   } catch (error) {
