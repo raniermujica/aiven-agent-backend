@@ -114,7 +114,7 @@ router.post('/:businessSlug/check-availability', async (req, res) => {
     // Generar slots basados en slot_duration_minutes
     const slots = [];
     const slotDuration = rule.slot_duration_minutes || 30;
-    
+
     // Parsear horarios (formato HH:MM:SS)
     const [openHour, openMinute] = rule.open_time.split(':').map(Number);
     const [closeHour, closeMinute] = rule.close_time.split(':').map(Number);
@@ -132,8 +132,9 @@ router.post('/:businessSlug/check-availability', async (req, res) => {
       // Incrementar según slot_duration_minutes
       currentMinute += slotDuration;
       if (currentMinute >= 60) {
+        const hoursToAdd = Math.floor(currentMinute / 60);
+        currentHour += hoursToAdd;
         currentMinute = currentMinute % 60;
-        currentHour += Math.floor((currentMinute + slotDuration) / 60);
       }
     }
 
@@ -159,7 +160,7 @@ router.post('/:businessSlug/check-availability', async (req, res) => {
     // Filtrar slots ocupados
     const availableSlots = slots.filter(slot => {
       const [slotHour, slotMinute] = slot.split(':').map(Number);
-      
+
       // Crear timestamp del slot
       const slotTime = new Date(date);
       slotTime.setHours(slotHour, slotMinute, 0, 0);
