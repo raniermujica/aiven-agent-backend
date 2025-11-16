@@ -74,7 +74,18 @@ router.post('/:businessSlug/check-availability', async (req, res) => {
 router.post('/:businessSlug/appointments', async (req, res) => {
   try {
     const { businessSlug } = req.params;
-    const { customerName, customerPhone, customerEmail, serviceId, date, time, notes } = req.body;
+    const { 
+      clientName, 
+      clientPhone, 
+      clientEmail, 
+      serviceId, 
+      serviceName,
+      durationMinutes,
+      scheduledDate, 
+      appointmentTime,
+      services,
+      notes 
+    } = req.body;
 
     // Obtener restaurant por slug
     const { data: restaurant, error: restaurantError } = await supabase
@@ -92,7 +103,7 @@ router.post('/:businessSlug/appointments', async (req, res) => {
     const { data: existingCustomer } = await supabase
       .from('customers')
       .select('id')
-      .eq('phone', customerPhone)
+      .eq('phone', clientPhone)
       .eq('restaurant_id', restaurant.id)
       .single();
 
@@ -103,9 +114,9 @@ router.post('/:businessSlug/appointments', async (req, res) => {
         .from('customers')
         .insert({
           restaurant_id: restaurant.id,
-          name: customerName,
-          phone: customerPhone,
-          email: customerEmail,
+          name: clientName,
+          phone: clientPhone,
+          email: clientEmail,
         })
         .select()
         .single();
@@ -115,27 +126,23 @@ router.post('/:businessSlug/appointments', async (req, res) => {
     }
 
     // Crear cita
-    const appointmentTime = `${date}T${time}:00`;
-    
     const { data: appointment, error: appointmentError } = await supabase
       .from('appointments')
       .insert({
         restaurant_id: restaurant.id,
         customer_id: customerId,
         service_id: serviceId,
-        scheduled_date: appointmentTime, 
+        service_name: serviceName,
+        duration_minutes: durationMinutes,
+        scheduled_date: scheduledDate || appointmentTime,
         appointment_time: appointmentTime,
-        client_name: customerName,
-        client_phone: customerPhone,
-        client_email: customerEmail,
+        client_name: clientName,
+        client_phone: clientPhone,
+        client_email: clientEmail,
         status: 'pendiente',
         notes: notes || null,
       })
-      .select(`
-        *,
-        service:services(name, duration_minutes),
-        customer:customers(name, phone, email)
-      `)
+      .select('*')
       .single();
 
     if (appointmentError) throw appointmentError;
@@ -145,11 +152,13 @@ router.post('/:businessSlug/appointments', async (req, res) => {
       appointment: {
         id: appointment.id,
         appointment_time: appointment.appointment_time,
-        service_name: appointment.service?.name,
-        duration_minutes: appointment.service?.duration_minutes,
-        customer_name: appointment.customer?.name || appointment.client_name,
-        customer_phone: appointment.customer?.phone || appointment.client_phone,
-        customer_email: appointment.customer?.email || appointment.client_email,
+        service_name: appointment.service_name,
+        duration_minutes: appointment.duration_minutes,
+        customer_name: appointment.client_name,
+        customer_phone: appointment.client_phone,
+        customer_email: appointment.client_email,
+        date: appointment.scheduled_date,
+        time: appointmentTime,
       }
     });
   } catch (error) {
