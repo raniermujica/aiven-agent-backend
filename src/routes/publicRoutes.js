@@ -39,6 +39,29 @@ router.get('/:businessSlug/services', async (req, res) => {
   }
 });
 
+// GET /api/public/:businessSlug/info
+router.get('/:businessSlug/info', async (req, res) => {
+  try {
+    const { businessSlug } = req.params;
+
+    // Obtener restaurant por slug
+    const { data: restaurant, error: restaurantError } = await supabase
+      .from('restaurants')
+      .select('id, name, slug, phone, email, address, logo_url, description, business_hours')
+      .eq('slug', businessSlug)
+      .single();
+
+    if (restaurantError || !restaurant) {
+      return res.status(404).json({ error: 'Negocio no encontrado' });
+    }
+
+    res.json({ business: restaurant });
+  } catch (error) {
+    console.error('Error obteniendo info del negocio:', error);
+    res.status(500).json({ error: 'Error al obtener información del negocio' });
+  }
+});
+
 // POST /api/public/:businessSlug/check-availability
 router.post('/:businessSlug/check-availability', async (req, res) => {
   try {
@@ -149,7 +172,6 @@ router.post('/:businessSlug/appointments', async (req, res) => {
 
     if (appointmentError) throw appointmentError;
 
-    // ← NUEVO: Crear relación en appointment_services
     const { error: appointmentServiceError } = await supabase
       .from('appointment_services')
       .insert({
