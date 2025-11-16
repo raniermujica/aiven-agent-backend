@@ -310,10 +310,10 @@ export async function checkAvailability(req, res) {
       return res.status(400).json({ error: 'Fecha y hora son requeridas' });
     }
 
-    // 1. Cargar Timezone y Config
+    // 1. Cargar Timezone
     const { data: business, error: businessError } = await supabase
       .from('restaurants')
-      .select('timezone, config')
+      .select('timezone')
       .eq('id', businessId)
       .single();
 
@@ -325,35 +325,33 @@ export async function checkAvailability(req, res) {
     const businessTimezone = business?.timezone || 'Europe/Madrid';
 
     // 2. Obtener Regla de Horario
-    const requestedDateObj = parseISO(date);
+    const requestedDateObj = new Date(date);
     const dayOfWeek = requestedDateObj.getDay();
+    
     const { data: dayRules, error: rulesError } = await supabase
       .from('availability_rules')
-      .select('open_time, close_time, is_closed')
+      .select('open_time, close_time, is_closed, max_reservations_per_slot')
       .eq('restaurant_id', businessId)
-      .eq('day_of_week', dayOfWeek)
-      .is('specific_date', null)
+      .or(`specific_date.eq.${date},and(day_of_week.eq.${dayOfWeek},specific_date.is.null)`)
       .order('priority', { ascending: false })
       .limit(1)
       .single();
 
     if (rulesError && rulesError.code !== 'PGRST116') {
-      console.error('Error cargando reglas de disponibilidad:', rulesError);
-      return res.status(500).json({ error: 'Error cargando reglas de disponibilidad' });
+      console.error('Error cargando reglas:', rulesError);
+      return res.status(500).json({ error: 'Error cargando reglas' });
     }
 
     const daySchedule = dayRules || { is_closed: true };
 
-    // =======================================================================
-    // PASO 1: VERIFICAR HORARIOS DEL NEGOCIO (Validación de Horas)
-    // =======================================================================
+    // Verificar si está cerrado
     if (daySchedule.is_closed) {
-      const dayNameES = ['domingos', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábados'];
+      const dayNames = ['domingos', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábados'];
       return res.json({
         available: false,
         is_within_business_hours: false,
-        business_hours_message: `El negocio está cerrado los ${dayNameES[dayOfWeek]}`,
-        suggested_times: [] // 💡 Devolvemos array vacío
+        business_hours_message: `El negocio está cerrado los ${dayNames[dayOfWeek]}`,
+        suggested_times: []
       });
     }
 
@@ -361,61 +359,123 @@ export async function checkAvailability(req, res) {
     const closeTime = daySchedule.close_time;
 
     if (!openTime || !closeTime) {
-      return res.json({ available: false, is_within_business_hours: false, business_hours_message: 'Horario no configurado para este día', suggested_times: [] });
+      return res.json({ 
+        available: false, 
+        is_within_business_hours: false, 
+        business_hours_message: 'Horario no configurado', 
+        suggested_times: [] 
+      });
     }
 
-    const requestedTimeStr = time.substring(0, 5);
-    const openTimeNormalized = openTime.substring(0, 5);
-    const closeTimeNormalized = closeTime.substring(0, 5);
+    // Normalizar horarios
+    const [openHour, openMinute] = openTime.split(':').map(Number);
+    const [closeHour, closeMinute] = closeTime.split(':').map(Number);
+    const [requestedHour, requestedMinute] = time.split(':').map(Number);
 
-    if (requestedTimeStr < openTimeNormalized) {
-      return res.json({ available: false, is_within_business_hours: false, business_hours_message: `El horario de atención empieza a las ${openTimeNormalized}`, suggested_times: [] });
+    // Verificar que está dentro del horario
+    const requestedMinutes = requestedHour * 60 + requestedMinute;
+    const openMinutes = openHour * 60 + openMinute;
+    const closeMinutes = closeHour * 60 + closeMinute;
+
+    if (requestedMinutes < openMinutes) {
+      return res.json({
+        available: false,
+        is_within_business_hours: false,
+        business_hours_message: `El horario de atención empieza a las ${openTime.substring(0, 5)}`,
+        suggested_times: []
+      });
     }
 
-    const requestedStartUTC = getUTCFromLocal(date, time, businessTimezone);
-    const requestedEndUTC = new Date(requestedStartUTC.getTime() + (totalDuration * 60 * 1000));
-    const requestedEndLocal = toZonedTime(requestedEndUTC, businessTimezone);
-    const endTimeStr = format(requestedEndLocal, 'HH:mm', { timeZone: businessTimezone });
-    if (endTimeStr > closeTimeNormalized) {
-      return res.json({ available: false, is_within_business_hours: false, business_hours_message: `La cita terminaría a las ${endTimeStr}, después del cierre (${closeTimeNormalized})`, suggested_times: [] });
+    // Verificar que el servicio termina antes del cierre
+    const serviceEndMinutes = requestedMinutes + totalDuration;
+    if (serviceEndMinutes > closeMinutes) {
+      return res.json({
+        available: false,
+        is_within_business_hours: false,
+        business_hours_message: `La cita terminaría después del cierre (${closeTime.substring(0, 5)})`,
+        suggested_times: []
+      });
     }
 
-    // =======================================================================
-    // PASO 2: VERIFICAR CONFLICTOS (Lógica 💡 MODIFICADA)
-    // =======================================================================
+    // Obtener citas existentes
+    const startOfDay = new Date(date + 'T00:00:00Z');
+    const endOfDay = new Date(date + 'T23:59:59Z');
 
-    // Llamamos al helper de capacidad
-    const availabilityCheck = await checkSlotCapacity(
-      businessId,
-      requestedStartUTC,
-      totalDuration,
-      date,
-      businessTimezone
-    );
+    const { data: appointments, error: appointmentsError } = await supabase
+      .from('appointments')
+      .select('appointment_time, duration_minutes')
+      .eq('restaurant_id', businessId)
+      .gte('appointment_time', startOfDay.toISOString())
+      .lte('appointment_time', endOfDay.toISOString())
+      .in('status', ['confirmado', 'pendiente']);
 
-    // --- 💡 INICIO DE LA MODIFICACIÓN ---
-    // Si NO está disponible, intentamos buscar alternativas
-    if (!availabilityCheck.available) {
-      const suggestedTimes = await findNextAvailableSlots(
-        businessId,
-        totalDuration,
-        daySchedule,
-        date,
-        businessTimezone,
-        requestedStartUTC // Empezamos a buscar desde la hora que falló
+    if (appointmentsError) {
+      console.error('Error obteniendo citas:', appointmentsError);
+    }
+
+    // Crear timestamp del slot solicitado
+    const requestedStart = new Date(date + `T${time}:00Z`);
+    const requestedEnd = new Date(requestedStart.getTime() + totalDuration * 60000);
+
+    // Contar superposiciones
+    const overlappingAppointments = (appointments || []).filter(apt => {
+      const aptStart = new Date(apt.appointment_time);
+      const aptEnd = new Date(aptStart.getTime() + (apt.duration_minutes || 60) * 60000);
+
+      return (
+        (requestedStart >= aptStart && requestedStart < aptEnd) ||
+        (requestedEnd > aptStart && requestedEnd <= aptEnd) ||
+        (requestedStart <= aptStart && requestedEnd >= aptEnd)
       );
+    }).length;
+
+    const maxCapacity = daySchedule.max_reservations_per_slot || 1;
+
+    // Verificar disponibilidad
+    if (overlappingAppointments >= maxCapacity) {
+      // Buscar slots sugeridos
+      const suggestedTimes = [];
+      const SLOT_INTERVAL = 15;
+      
+      let currentTime = new Date(date + `T${openTime}`);
+      const closeDateTime = new Date(date + `T${closeTime}`);
+
+      while (currentTime < closeDateTime && suggestedTimes.length < 5) {
+        const serviceEnd = new Date(currentTime.getTime() + totalDuration * 60000);
+        
+        if (serviceEnd > closeDateTime) break;
+
+        // Contar superposiciones en este slot
+        const slotOverlaps = (appointments || []).filter(apt => {
+          const aptStart = new Date(apt.appointment_time);
+          const aptEnd = new Date(aptStart.getTime() + (apt.duration_minutes || 60) * 60000);
+
+          return (
+            (currentTime >= aptStart && currentTime < aptEnd) ||
+            (serviceEnd > aptStart && serviceEnd <= aptEnd) ||
+            (currentTime <= aptStart && serviceEnd >= aptEnd)
+          );
+        }).length;
+
+        if (slotOverlaps < maxCapacity) {
+          const hours = currentTime.getHours();
+          const minutes = currentTime.getMinutes();
+          suggestedTimes.push(`${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`);
+        }
+
+        currentTime = new Date(currentTime.getTime() + SLOT_INTERVAL * 60000);
+      }
 
       return res.json({
         available: false,
         has_conflict: true,
         is_within_business_hours: true,
-        business_hours_message: availabilityCheck.reason,
-        suggested_times: suggestedTimes // Devolvemos las sugerencias
+        business_hours_message: `Capacidad máxima alcanzada (${overlappingAppointments}/${maxCapacity})`,
+        suggested_times: suggestedTimes
       });
     }
-    // --- FIN DE LA MODIFICACIÓN ---
 
-    // Si SÍ está disponible (el código de abajo solo se ejecuta si hay hueco)
+    // Slot disponible
     res.json({
       available: true,
       has_conflict: false,
