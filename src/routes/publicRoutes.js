@@ -79,22 +79,128 @@ router.post('/:businessSlug/check-availability', async (req, res) => {
       return res.status(404).json({ error: 'Negocio no encontrado' });
     }
 
-    // Aquí puedes implementar la lógica de disponibilidad
-    // Por ahora retornamos slots de ejemplo
-    const availableSlots = [
-      '09:00', '09:30', '10:00', '10:30', '11:00', '11:30',
-      '12:00', '12:30', '15:00', '15:30', '16:00', '16:30',
-      '17:00', '17:30', '18:00', '18:30', '19:00'
-    ];
+    // Parsear fecha
+    const requestedDate = new Date(date);
+    const dayOfWeek = requestedDate.getDay(); // 0 = Domingo, 6 = Sábado
+
+    // Buscar reglas de disponibilidad
+    // 1. Primero buscar fecha específica
+    // 2. Si no existe, buscar día de la semana
+    const { data: availabilityRules, error: rulesError } = await supabase
+      .from('availability_rules')
+      .select('*')
+      .eq('restaurant_id', restaurant.id)
+      .or(`specific_date.eq.${date},and(day_of_week.eq.${dayOfWeek},specific_date.is.null)`)
+      .order('priority', { ascending: false });
+
+    if (rulesError) {
+      console.error('Error obteniendo reglas:', rulesError);
+      return res.status(500).json({ error: 'Error al obtener disponibilidad' });
+    }
+
+    // Si no hay reglas, el negocio está cerrado
+    if (!availabilityRules || availabilityRules.length === 0) {
+      return res.json({ availableSlots: [] });
+    }
+
+    // Tomar la regla con mayor prioridad (fecha específica > día de semana)
+    const rule = availabilityRules[0];
+
+    // Si está cerrado
+    if (rule.is_closed) {
+      return res.json({ availableSlots: [] });
+    }
+
+    // Generar slots basados en slot_duration_minutes
+    const slots = [];
+    const slotDuration = rule.slot_duration_minutes || 30;
+    
+    // Parsear horarios (formato HH:MM:SS)
+    const [openHour, openMinute] = rule.open_time.split(':').map(Number);
+    const [closeHour, closeMinute] = rule.close_time.split(':').map(Number);
+
+    let currentHour = openHour;
+    let currentMinute = openMinute;
+
+    while (
+      currentHour < closeHour ||
+      (currentHour === closeHour && currentMinute < closeMinute)
+    ) {
+      const timeString = `${String(currentHour).padStart(2, '0')}:${String(currentMinute).padStart(2, '0')}`;
+      slots.push(timeString);
+
+      // Incrementar según slot_duration_minutes
+      currentMinute += slotDuration;
+      if (currentMinute >= 60) {
+        currentMinute = currentMinute % 60;
+        currentHour += Math.floor((currentMinute + slotDuration) / 60);
+      }
+    }
+
+    // Obtener citas existentes para ese día
+    const startOfDay = new Date(date);
+    startOfDay.setHours(0, 0, 0, 0);
+
+    const endOfDay = new Date(date);
+    endOfDay.setHours(23, 59, 59, 999);
+
+    const { data: appointments, error: appointmentsError } = await supabase
+      .from('appointments')
+      .select('appointment_time, duration_minutes')
+      .eq('restaurant_id', restaurant.id)
+      .gte('appointment_time', startOfDay.toISOString())
+      .lte('appointment_time', endOfDay.toISOString())
+      .in('status', ['confirmado', 'pendiente']);
+
+    if (appointmentsError) {
+      console.error('Error obteniendo citas:', appointmentsError);
+    }
+
+    // Filtrar slots ocupados
+    const availableSlots = slots.filter(slot => {
+      const [slotHour, slotMinute] = slot.split(':').map(Number);
+      
+      // Crear timestamp del slot
+      const slotTime = new Date(date);
+      slotTime.setHours(slotHour, slotMinute, 0, 0);
+
+      // El slot solicitado termina en
+      const slotEnd = new Date(slotTime.getTime() + durationMinutes * 60000);
+
+      // Verificar que hay tiempo suficiente antes del cierre
+      const closeTime = new Date(date);
+      closeTime.setHours(closeHour, closeMinute, 0, 0);
+
+      if (slotEnd > closeTime) {
+        return false;
+      }
+
+      // Contar cuántas citas hay en este slot
+      const appointmentsInSlot = appointments?.filter(apt => {
+        const aptStart = new Date(apt.appointment_time);
+        const aptEnd = new Date(aptStart.getTime() + (apt.duration_minutes || 60) * 60000);
+
+        // Hay superposición si los rangos se cruzan
+        return (
+          (slotTime >= aptStart && slotTime < aptEnd) || // Slot empieza durante cita
+          (slotEnd > aptStart && slotEnd <= aptEnd) ||   // Slot termina durante cita
+          (slotTime <= aptStart && slotEnd >= aptEnd)    // Slot envuelve toda la cita
+        );
+      }) || [];
+
+      // Verificar capacidad máxima por slot
+      const maxReservations = rule.max_reservations_per_slot || 1;
+      return appointmentsInSlot.length < maxReservations;
+    });
 
     res.json({ availableSlots });
+
   } catch (error) {
     console.error('Error verificando disponibilidad:', error);
     res.status(500).json({ error: 'Error al verificar disponibilidad' });
   }
 });
 
-// POST /api/public/:businessSlug/appointments
 // POST /api/public/:businessSlug/appointments
 router.post('/:businessSlug/appointments', async (req, res) => {
   try {
