@@ -74,10 +74,10 @@ router.post('/:businessSlug/check-availability', async (req, res) => {
 
     console.log('[Availability] Checking for:', { businessSlug, date, durationMinutes });
 
-    // Obtener restaurant
+    // Obtener restaurant con config
     const { data: restaurant, error: restaurantError } = await supabase
       .from('restaurants')
-      .select('id, timezone')
+      .select('id, timezone, config')
       .eq('slug', businessSlug)
       .single();
 
@@ -86,10 +86,56 @@ router.post('/:businessSlug/check-availability', async (req, res) => {
     }
 
     const timezone = restaurant.timezone || 'Europe/Madrid';
+    
+    // Obtener capacidad de config
+    let maxCapacity = 1;
+    if (restaurant.config && typeof restaurant.config === 'object') {
+      maxCapacity = restaurant.config.max_appointments_per_slot || 1;
+    } else if (typeof restaurant.config === 'string') {
+      try {
+        const configParsed = JSON.parse(restaurant.config);
+        maxCapacity = restaurant.config.max_appointments_per_slot || 1;
+      } catch (e) {
+        console.warn('[Availability] Error parsing config:', e);
+      }
+    }
+
+    console.log('[Availability] Max capacity from config:', maxCapacity);
+
     const requestedDateObj = new Date(date + 'T00:00:00');
     const dayOfWeek = requestedDateObj.getDay();
 
-    // Obtener reglas de disponibilidad
+    // ========================================
+    // OBTENER BLOQUEOS DEL DÍA
+    // ========================================
+    const dayStartUTC = fromZonedTime(new Date(date + 'T00:00:00'), timezone);
+    const dayEndUTC = fromZonedTime(new Date(date + 'T23:59:59'), timezone);
+
+    const { data: dayBlocks, error: blocksError } = await supabase
+      .from('blocked_slots')
+      .select('blocked_from, blocked_until, reason, block_type')
+      .eq('restaurant_id', restaurant.id)
+      .eq('is_active', true)
+      .is('table_id', null)
+      .or(`and(blocked_from.lte.${dayEndUTC.toISOString()},blocked_until.gte.${dayStartUTC.toISOString()})`);
+
+    if (blocksError) {
+      console.error('[Availability] Error getting blocks:', blocksError);
+    }
+
+    // Convertir bloqueos a hora local
+    const blockedRanges = (dayBlocks || []).map(block => ({
+      start: toZonedTime(new Date(block.blocked_from), timezone),
+      end: toZonedTime(new Date(block.blocked_until), timezone),
+      reason: block.reason,
+      type: block.block_type
+    }));
+
+    console.log('[Availability] Blocked ranges:', blockedRanges.length);
+
+    // ========================================
+    // OBTENER REGLAS DE DISPONIBILIDAD
+    // ========================================
     const { data: availabilityRules, error: rulesError } = await supabase
       .from('availability_rules')
       .select('*')
@@ -105,6 +151,7 @@ router.post('/:businessSlug/check-availability', async (req, res) => {
     const rule = availabilityRules[0];
 
     if (rule.is_closed) {
+      console.log('[Availability] Business closed');
       return res.json({ availableSlots: [] });
     }
 
@@ -112,26 +159,26 @@ router.post('/:businessSlug/check-availability', async (req, res) => {
     const [openHour, openMinute] = rule.open_time.split(':').map(Number);
     const [closeHour, closeMinute] = rule.close_time.split(':').map(Number);
 
-    // Crear timestamps en hora local
     const openTimeLocal = new Date(date);
     openTimeLocal.setHours(openHour, openMinute, 0, 0);
     
     const closeTimeLocal = new Date(date);
     closeTimeLocal.setHours(closeHour, closeMinute, 0, 0);
 
-    // Obtener citas del día (consulta en UTC)
-    const startOfDayLocal = new Date(date + 'T00:00:00');
-    const endOfDayLocal = new Date(date + 'T23:59:59');
-    
-    const startOfDayUTC = fromZonedTime(startOfDayLocal, timezone);
-    const endOfDayUTC = fromZonedTime(endOfDayLocal, timezone);
+    console.log('[Availability] Business hours:', {
+      open: `${openHour}:${openMinute}`,
+      close: `${closeHour}:${closeMinute}`
+    });
 
+    // ========================================
+    // OBTENER CITAS DEL DÍA
+    // ========================================
     const { data: appointments, error: appointmentsError } = await supabase
       .from('appointments')
       .select('appointment_time, duration_minutes')
       .eq('restaurant_id', restaurant.id)
-      .gte('appointment_time', startOfDayUTC.toISOString())
-      .lte('appointment_time', endOfDayUTC.toISOString())
+      .gte('appointment_time', dayStartUTC.toISOString())
+      .lte('appointment_time', dayEndUTC.toISOString())
       .in('status', ['confirmado', 'pendiente']);
 
     if (appointmentsError) {
@@ -148,9 +195,16 @@ router.post('/:businessSlug/check-availability', async (req, res) => {
       return { start: startLocal, end: endLocal };
     });
 
-    const maxCapacity = rule.max_reservations_per_slot || 1;
+    console.log('[Availability] Busy blocks:', busyBlocks.map(b => ({
+      start: `${b.start.getHours()}:${String(b.start.getMinutes()).padStart(2, '0')}`,
+      end: `${b.end.getHours()}:${String(b.end.getMinutes()).padStart(2, '0')}`
+    })));
+
+    // ========================================
+    // GENERAR SLOTS DISPONIBLES
+    // ========================================
     const availableSlots = [];
-    const SLOT_INTERVAL = 15; // minutos
+    const SLOT_INTERVAL = 15;
     
     let currentTime = new Date(openTimeLocal);
 
@@ -161,19 +215,49 @@ router.post('/:businessSlug/check-availability', async (req, res) => {
         break;
       }
 
-      // Contar superposiciones en hora local
-      const overlappingAppointments = busyBlocks.filter(block => {
+      // Verificar si el slot está en un rango bloqueado
+      const isInBlockedRange = blockedRanges.some(block => {
         return (
           (currentTime >= block.start && currentTime < block.end) ||
           (serviceEndTime > block.start && serviceEndTime <= block.end) ||
           (currentTime <= block.start && serviceEndTime >= block.end)
         );
-      }).length;
+      });
 
-      if (overlappingAppointments < maxCapacity) {
-        const hours = currentTime.getHours();
-        const minutes = currentTime.getMinutes();
-        const timeString = `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`;
+      if (isInBlockedRange) {
+        currentTime = new Date(currentTime.getTime() + SLOT_INTERVAL * 60000);
+        continue;
+      }
+
+      // Verificar capacidad minuto a minuto
+      let isSlotAvailable = true;
+      let maxConcurrentFound = 0;
+
+      for (let minute = 0; minute < durationMinutes; minute++) {
+        const checkTime = new Date(currentTime.getTime() + minute * 60000);
+        
+        const activeAppointments = busyBlocks.filter(block => {
+          return checkTime >= block.start && checkTime < block.end;
+        }).length;
+
+        if (activeAppointments > maxConcurrentFound) {
+          maxConcurrentFound = activeAppointments;
+        }
+
+        if (activeAppointments >= maxCapacity) {
+          isSlotAvailable = false;
+        }
+      }
+
+      const hours = currentTime.getHours();
+      const minutes = currentTime.getMinutes();
+      const timeString = `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`;
+
+      if (!isSlotAvailable) {
+        console.log(`[Availability] Slot ${timeString} BLOCKED - max concurrent: ${maxConcurrentFound}/${maxCapacity}`);
+      }
+
+      if (isSlotAvailable) {
         availableSlots.push(timeString);
       }
 

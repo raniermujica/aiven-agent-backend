@@ -310,10 +310,10 @@ export async function checkAvailability(req, res) {
       return res.status(400).json({ error: 'Fecha y hora son requeridas' });
     }
 
-    // Cargar timezone
+    // Cargar restaurant con timezone y config
     const { data: business, error: businessError } = await supabase
       .from('restaurants')
-      .select('timezone')
+      .select('timezone, config')
       .eq('id', businessId)
       .single();
 
@@ -323,13 +323,63 @@ export async function checkAvailability(req, res) {
     }
 
     const timezone = business?.timezone || 'Europe/Madrid';
+
+    // Obtener capacidad de config
+    let maxCapacity = 1;
+    if (business.config && typeof business.config === 'object') {
+      maxCapacity = business.config.max_appointments_per_slot || 1;
+    } else if (typeof business.config === 'string') {
+      try {
+        const configParsed = JSON.parse(business.config);
+        maxCapacity = configParsed.max_appointments_per_slot || 1;
+      } catch (e) {
+        console.warn('[Availability] Error parsing config:', e);
+      }
+    }
+
     const requestedDateObj = parseISO(date);
     const dayOfWeek = requestedDateObj.getDay();
 
-    // Obtener reglas
+    // ========================================
+    // VERIFICAR BLOQUEOS
+    // ========================================
+    const requestedStartLocal = new Date(`${date}T${time}:00`);
+    const requestedEndLocal = new Date(requestedStartLocal.getTime() + totalDuration * 60000);
+    
+    const requestedStartUTC = fromZonedTime(requestedStartLocal, timezone);
+    const requestedEndUTC = fromZonedTime(requestedEndLocal, timezone);
+
+    const { data: blockedSlots, error: blockedError } = await supabase
+      .from('blocked_slots')
+      .select('*')
+      .eq('restaurant_id', businessId)
+      .eq('is_active', true)
+      .is('table_id', null) // Solo bloqueos generales (no de mesas específicas)
+      .or(`and(blocked_from.lte.${requestedEndUTC.toISOString()},blocked_until.gte.${requestedStartUTC.toISOString()})`);
+
+    if (blockedError) {
+      console.error('Error verificando bloqueos:', blockedError);
+    }
+
+    if (blockedSlots && blockedSlots.length > 0) {
+      const block = blockedSlots[0];
+      return res.json({
+        available: false,
+        has_conflict: false,
+        is_blocked: true,
+        is_within_business_hours: true,
+        business_hours_message: block.reason || 'Este horario está bloqueado',
+        block_type: block.block_type,
+        suggested_times: []
+      });
+    }
+
+    // ========================================
+    // VERIFICAR HORARIOS DEL NEGOCIO
+    // ========================================
     const { data: dayRules, error: rulesError } = await supabase
       .from('availability_rules')
-      .select('open_time, close_time, is_closed, max_reservations_per_slot')
+      .select('open_time, close_time, is_closed')
       .eq('restaurant_id', businessId)
       .or(`specific_date.eq.${date},and(day_of_week.eq.${dayOfWeek},specific_date.is.null)`)
       .order('priority', { ascending: false })
@@ -365,7 +415,7 @@ export async function checkAvailability(req, res) {
       });
     }
 
-    // Verificar horario de apertura/cierre
+    // Normalizar horarios
     const [openHour, openMinute] = openTime.split(':').map(Number);
     const [closeHour, closeMinute] = closeTime.split(':').map(Number);
     const [requestedHour, requestedMinute] = time.split(':').map(Number);
@@ -393,7 +443,9 @@ export async function checkAvailability(req, res) {
       });
     }
 
-    // Obtener citas del día con timezone
+    // ========================================
+    // VERIFICAR CAPACIDAD (CITAS EXISTENTES)
+    // ========================================
     const startOfDayLocal = new Date(date + 'T00:00:00');
     const endOfDayLocal = new Date(date + 'T23:59:59');
     
@@ -420,24 +472,28 @@ export async function checkAvailability(req, res) {
       return { start: startLocal, end: endLocal };
     });
 
-    // Crear timestamp del slot solicitado en hora local
-    const requestedStartLocal = new Date(date);
-    requestedStartLocal.setHours(requestedHour, requestedMinute, 0, 0);
-    const requestedEndLocal = new Date(requestedStartLocal.getTime() + totalDuration * 60000);
+    // Verificar capacidad minuto a minuto
+    let maxConcurrentFound = 0;
+    let isSlotAvailable = true;
 
-    // Contar superposiciones
-    const overlappingAppointments = busyBlocks.filter(block => {
-      return (
-        (requestedStartLocal >= block.start && requestedStartLocal < block.end) ||
-        (requestedEndLocal > block.start && requestedEndLocal <= block.end) ||
-        (requestedStartLocal <= block.start && requestedEndLocal >= block.end)
-      );
-    }).length;
+    for (let minute = 0; minute < totalDuration; minute++) {
+      const checkTime = new Date(requestedStartLocal.getTime() + minute * 60000);
+      
+      const activeAppointments = busyBlocks.filter(block => {
+        return checkTime >= block.start && checkTime < block.end;
+      }).length;
 
-    const maxCapacity = daySchedule.max_reservations_per_slot || 1;
+      if (activeAppointments > maxConcurrentFound) {
+        maxConcurrentFound = activeAppointments;
+      }
 
-    if (overlappingAppointments >= maxCapacity) {
-      // Buscar slots sugeridos
+      if (activeAppointments >= maxCapacity) {
+        isSlotAvailable = false;
+      }
+    }
+
+    // Si NO está disponible, buscar sugerencias
+    if (!isSlotAvailable) {
       const suggestedTimes = [];
       const SLOT_INTERVAL = 15;
       
@@ -452,15 +508,40 @@ export async function checkAvailability(req, res) {
         
         if (serviceEnd > closeDateTime) break;
 
-        const slotOverlaps = busyBlocks.filter(block => {
-          return (
-            (currentTime >= block.start && currentTime < block.end) ||
-            (serviceEnd > block.start && serviceEnd <= block.end) ||
-            (currentTime <= block.start && serviceEnd >= block.end)
-          );
-        }).length;
+        // Verificar bloqueos para esta sugerencia
+        const suggestedStartUTC = fromZonedTime(currentTime, timezone);
+        const suggestedEndUTC = fromZonedTime(serviceEnd, timezone);
 
-        if (slotOverlaps < maxCapacity) {
+        const { data: suggestedBlocks } = await supabase
+          .from('blocked_slots')
+          .select('id')
+          .eq('restaurant_id', businessId)
+          .eq('is_active', true)
+          .is('table_id', null)
+          .or(`and(blocked_from.lte.${suggestedEndUTC.toISOString()},blocked_until.gte.${suggestedStartUTC.toISOString()})`);
+
+        // Si está bloqueado, saltar
+        if (suggestedBlocks && suggestedBlocks.length > 0) {
+          currentTime = new Date(currentTime.getTime() + SLOT_INTERVAL * 60000);
+          continue;
+        }
+
+        // Verificar capacidad minuto a minuto
+        let slotAvailable = true;
+        for (let minute = 0; minute < totalDuration; minute++) {
+          const checkTime = new Date(currentTime.getTime() + minute * 60000);
+          
+          const active = busyBlocks.filter(block => {
+            return checkTime >= block.start && checkTime < block.end;
+          }).length;
+
+          if (active >= maxCapacity) {
+            slotAvailable = false;
+            break;
+          }
+        }
+
+        if (slotAvailable) {
           const hours = currentTime.getHours();
           const minutes = currentTime.getMinutes();
           suggestedTimes.push(`${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`);
@@ -473,11 +554,12 @@ export async function checkAvailability(req, res) {
         available: false,
         has_conflict: true,
         is_within_business_hours: true,
-        business_hours_message: `Capacidad máxima alcanzada (${overlappingAppointments}/${maxCapacity})`,
+        business_hours_message: `Capacidad máxima alcanzada (${maxConcurrentFound}/${maxCapacity})`,
         suggested_times: suggestedTimes
       });
     }
 
+    // Slot disponible
     res.json({
       available: true,
       has_conflict: false,
