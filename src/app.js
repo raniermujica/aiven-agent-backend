@@ -16,6 +16,8 @@ import whatsappRoutes from './routes/whatsappRoutes.js';
 import emailRoutes from './routes/emailRoutes.js';
 import contactRoutes from './routes/contactRoutes.js';
 import publicRoutes from './routes/publicRoutes.js';
+import blockedSlotsRoutes from './routes/blockedSlotsRoutes.js';
+
 
 dotenv.config();
 
@@ -81,6 +83,7 @@ app.use('/api/webhooks', webhooksRoutes);
 app.use('/api/whatsapp', whatsappRoutes);
 app.use('/api/emails', emailRoutes);
 app.use('/api/contact', contactRoutes);
+app.use('/api/blocked-slots', blockedSlotsRoutes);
 
 // Error handler 
 app.use((err, req, res, next) => {
