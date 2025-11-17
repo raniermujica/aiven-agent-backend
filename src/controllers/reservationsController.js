@@ -1,12 +1,16 @@
 import { supabase } from '../config/database.js';
+import { tableAssignmentEngine } from '../services/restaurant/tableAssignmentEngine.js';
 
+/**
+ * Obtener todas las reservas/citas
+ */
 export async function getReservations(req, res) {
   try {
-    const { date, status } = req.query;
     const businessId = req.business.id;
+    const { date, status } = req.query;
 
     let query = supabase
-      .from('reservations')
+      .from('appointments')
       .select(`
         *,
         customers (
@@ -19,33 +23,29 @@ export async function getReservations(req, res) {
         tables (
           id,
           table_number,
-          table_name
-        ),
-        services (
-          id,
-          name
+          table_type,
+          capacity
         )
       `)
       .eq('restaurant_id', businessId)
-      .order('reservation_date', { ascending: true })
-      .order('reservation_time', { ascending: true });
+      .order('appointment_time', { ascending: true });
 
     if (date) {
-      query = query.eq('reservation_date', date);
+      query = query.eq('scheduled_date', date);
     }
 
     if (status) {
       query = query.eq('status', status);
     }
 
-    const { data, error } = await query;
+    const { data: appointments, error } = await query;
 
     if (error) {
-      console.error('Error obteniendo reservas:', error);
-      return res.status(500).json({ error: 'Error obteniendo reservas' });
+      console.error('Error obteniendo citas:', error);
+      return res.status(500).json({ error: 'Error obteniendo citas' });
     }
 
-    res.json({ reservations: data });
+    res.json({ appointments });
 
   } catch (error) {
     console.error('Error en getReservations:', error);
@@ -53,13 +53,16 @@ export async function getReservations(req, res) {
   }
 }
 
+/**
+ * Obtener reservas/citas de hoy
+ */
 export async function getTodayReservations(req, res) {
   try {
     const businessId = req.business.id;
     const today = new Date().toISOString().split('T')[0];
 
     const { data, error } = await supabase
-      .from('reservations')
+      .from('appointments')
       .select(`
         *,
         customers (
@@ -67,28 +70,26 @@ export async function getTodayReservations(req, res) {
           name,
           phone,
           email,
-          is_vip,
-          customer_preferences (
-            allergies,
-            dietary_restrictions
-          )
+          is_vip
         ),
         tables (
           id,
           table_number,
-          table_name
+          table_type,
+          capacity
         )
       `)
       .eq('restaurant_id', businessId)
-      .eq('reservation_date', today)
-      .order('reservation_time', { ascending: true });
+      .gte('scheduled_date', today)
+      .lt('scheduled_date', new Date(Date.now() + 86400000).toISOString().split('T')[0])
+      .order('appointment_time', { ascending: true });
 
     if (error) {
-      console.error('Error obteniendo reservas de hoy:', error);
-      return res.status(500).json({ error: 'Error obteniendo reservas' });
+      console.error('Error obteniendo citas de hoy:', error);
+      return res.status(500).json({ error: 'Error obteniendo citas' });
     }
 
-    res.json({ reservations: data });
+    res.json({ appointments: data });
 
   } catch (error) {
     console.error('Error en getTodayReservations:', error);
@@ -96,6 +97,9 @@ export async function getTodayReservations(req, res) {
   }
 }
 
+/**
+ * Crear nueva reserva/cita
+ */
 export async function createReservation(req, res) {
   try {
     const businessId = req.business.id;
@@ -112,6 +116,7 @@ export async function createReservation(req, res) {
       specialOccasion,
       specialRequests,
       source = 'manual',
+      tablePreference,
     } = req.body;
 
     if (!reservationDate || !reservationTime || !partySize) {
@@ -120,8 +125,18 @@ export async function createReservation(req, res) {
       });
     }
 
+    // Verificar si es restaurante
+    const { data: business } = await supabase
+      .from('restaurants')
+      .select('business_type')
+      .eq('id', businessId)
+      .single();
+
+    const isRestaurant = business?.business_type === 'restaurant';
+
     let finalCustomerId = customerId;
 
+    // Crear o buscar cliente
     if (!finalCustomerId) {
       if (!customerName || !customerPhone) {
         return res.status(400).json({ 
@@ -160,22 +175,55 @@ export async function createReservation(req, res) {
       }
     }
 
-    const { data: reservation, error: reservationError } = await supabase
-      .from('reservations')
-      .insert({
-        restaurant_id: businessId,
-        customer_id: finalCustomerId,
-        table_id: tableId,
-        service_id: serviceId,
-        reservation_date: reservationDate,
-        reservation_time: reservationTime,
-        party_size: partySize,
-        special_occasion: specialOccasion,
-        special_requests: specialRequests,
-        source,
-        status: 'confirmed',
-        created_by: req.user.id,
-      })
+    // Asignación automática de mesa (solo para restaurantes)
+    let assignedTableId = tableId;
+    let assignmentReason = null;
+
+    if (isRestaurant && !tableId) {
+      console.log('[Reservation] Asignando mesa automáticamente...');
+      
+      const assignmentResult = await tableAssignmentEngine.findBestTable({
+        restaurantId: businessId,
+        date: reservationDate,
+        time: reservationTime,
+        partySize: parseInt(partySize),
+        duration: 90,
+        preference: tablePreference,
+      });
+
+      if (assignmentResult.success) {
+        assignedTableId = assignmentResult.table.id;
+        assignmentReason = assignmentResult.reason;
+        console.log('[Reservation] Mesa asignada:', assignmentReason);
+      } else {
+        console.warn('[Reservation] No se pudo asignar mesa:', assignmentResult.message);
+      }
+    }
+
+    // Crear cita en appointments (no reservations)
+    const appointmentData = {
+      restaurant_id: businessId,
+      customer_id: finalCustomerId,
+      table_id: assignedTableId,
+      service_id: serviceId,
+      scheduled_date: new Date(reservationDate).toISOString(),
+      appointment_time: new Date(`${reservationDate}T${reservationTime}:00Z`).toISOString(),
+      client_name: customerName,
+      client_phone: customerPhone,
+      client_email: customerEmail,
+      service_name: specialRequests || 'Reserva',
+      duration_minutes: 90,
+      party_size: partySize,
+      special_occasion: specialOccasion,
+      notes: specialRequests,
+      status: 'pendiente',
+      source,
+      created_by: req.user.id,
+    };
+
+    const { data: appointment, error } = await supabase
+      .from('appointments')
+      .insert(appointmentData)
       .select(`
         *,
         customers (
@@ -184,16 +232,40 @@ export async function createReservation(req, res) {
           phone,
           email,
           is_vip
+        ),
+        tables (
+          id,
+          table_number,
+          table_type,
+          capacity
         )
       `)
       .single();
 
-    if (reservationError) {
-      console.error('Error creando reserva:', reservationError);
-      return res.status(500).json({ error: 'Error creando reserva' });
+    if (error) {
+      console.error('Error creando cita:', error);
+      return res.status(500).json({ error: 'Error creando cita' });
     }
 
-    res.status(201).json({ reservation });
+    // Crear registro de asignación si hay mesa
+    if (assignedTableId && isRestaurant) {
+      await supabase
+        .from('table_assignments')
+        .insert({
+          appointment_id: appointment.id,
+          table_id: assignedTableId,
+          assigned_by: req.user.id,
+          assignment_type: tableId ? 'manual' : 'automatic',
+        });
+    }
+
+    res.status(201).json({ 
+      reservation: appointment, // Mantener nombre "reservation" para compatibilidad con frontend
+      tableAssignment: assignmentReason ? {
+        tableNumber: appointment.tables?.table_number,
+        reason: assignmentReason,
+      } : null,
+    });
 
   } catch (error) {
     console.error('Error en createReservation:', error);
@@ -201,55 +273,61 @@ export async function createReservation(req, res) {
   }
 }
 
+/**
+ * Actualizar estado de reserva/cita
+ */
 export async function updateReservationStatus(req, res) {
   try {
+    const businessId = req.business.id;
     const { reservationId } = req.params;
     const { status } = req.body;
-    const businessId = req.business.id;
 
-    const validStatuses = ['pending', 'confirmed', 'seated', 'completed', 'cancelled', 'no_show'];
-    if (!validStatuses.includes(status)) {
-      return res.status(400).json({ 
-        error: 'Estado inválido',
-        validStatuses 
-      });
+    if (!status) {
+      return res.status(400).json({ error: 'Estado es requerido' });
     }
 
-    const { data: reservation, error: checkError } = await supabase
-      .from('reservations')
-      .select('id, customer_id')
+    const validStatuses = ['pendiente', 'confirmado', 'completada', 'cancelada', 'no_show'];
+    if (!validStatuses.includes(status)) {
+      return res.status(400).json({ error: 'Estado inválido' });
+    }
+
+    // Verificar que la cita pertenece al restaurante
+    const { data: existing } = await supabase
+      .from('appointments')
+      .select('id')
       .eq('id', reservationId)
       .eq('restaurant_id', businessId)
       .single();
 
-    if (checkError || !reservation) {
-      return res.status(404).json({ error: 'Reserva no encontrada' });
+    if (!existing) {
+      return res.status(404).json({ error: 'Cita no encontrada' });
     }
 
-    const updates = { status };
+    const updateData = { 
+      status,
+      updated_at: new Date().toISOString()
+    };
 
-    if (status === 'seated') {
-      updates.checked_in_at = new Date().toISOString();
+    // Si se marca como confirmado, guardar timestamp
+    if (status === 'confirmado') {
+      updateData.confirmed_at = new Date().toISOString();
     }
 
-    if (status === 'completed') {
-      updates.checked_out_at = new Date().toISOString();
-      
-      await supabase.rpc('increment_customer_visits', {
-        customer_id_input: reservation.customer_id
-      });
+    // Si se cancela, guardar timestamp
+    if (status === 'cancelada') {
+      updateData.cancelled_at = new Date().toISOString();
     }
 
     const { data, error } = await supabase
-      .from('reservations')
-      .update(updates)
+      .from('appointments')
+      .update(updateData)
       .eq('id', reservationId)
       .select()
       .single();
 
     if (error) {
-      console.error('Error actualizando reserva:', error);
-      return res.status(500).json({ error: 'Error actualizando reserva' });
+      console.error('Error actualizando estado:', error);
+      return res.status(500).json({ error: 'Error actualizando estado' });
     }
 
     res.json({ reservation: data });
@@ -260,34 +338,33 @@ export async function updateReservationStatus(req, res) {
   }
 }
 
+/**
+ * Obtener estadísticas de reservas/citas
+ */
 export async function getReservationStats(req, res) {
   try {
     const businessId = req.business.id;
     const today = new Date().toISOString().split('T')[0];
 
-    const { data: todayStats, error: todayError } = await supabase
-      .from('reservations')
+    const { data, error } = await supabase
+      .from('appointments')
       .select('status, party_size')
       .eq('restaurant_id', businessId)
-      .eq('reservation_date', today);
+      .gte('scheduled_date', today);
 
-    if (todayError) {
-      console.error('Error obteniendo stats:', todayError);
+    if (error) {
+      console.error('Error obteniendo estadísticas:', error);
       return res.status(500).json({ error: 'Error obteniendo estadísticas' });
     }
 
-    const totalCovers = todayStats.reduce((sum, r) => sum + (r.party_size || 0), 0);
-
     const stats = {
       today: {
-        total: todayStats.length,
-        pending: todayStats.filter(r => r.status === 'pending').length,
-        confirmed: todayStats.filter(r => r.status === 'confirmed').length,
-        seated: todayStats.filter(r => r.status === 'seated').length,
-        completed: todayStats.filter(r => r.status === 'completed').length,
-        cancelled: todayStats.filter(r => r.status === 'cancelled').length,
-        noShows: todayStats.filter(r => r.status === 'no_show').length,
-        totalCovers,
+        total: data.length,
+        pendiente: data.filter(r => r.status === 'pendiente').length,
+        confirmado: data.filter(r => r.status === 'confirmado').length,
+        completada: data.filter(r => r.status === 'completada').length,
+        cancelada: data.filter(r => r.status === 'cancelada').length,
+        totalCovers: data.reduce((sum, r) => sum + (r.party_size || 1), 0),
       }
     };
 
@@ -299,7 +376,9 @@ export async function getReservationStats(req, res) {
   }
 }
 
-// NUEVA FUNCIÓN PARA EL CALENDARIO
+/**
+ * Obtener citas para el calendario
+ */
 export async function getCalendarReservations(req, res) {
   try {
     const businessId = req.business.id;
@@ -311,8 +390,8 @@ export async function getCalendarReservations(req, res) {
       });
     }
 
-    const { data: reservations, error } = await supabase
-      .from('reservations')
+    const { data: appointments, error } = await supabase
+      .from('appointments')
       .select(`
         *,
         customers (
@@ -322,36 +401,40 @@ export async function getCalendarReservations(req, res) {
           email,
           is_vip
         ),
-        services (
+        tables (
           id,
-          name,
-          duration,
-          price
+          table_number,
+          table_type,
+          capacity
         )
       `)
       .eq('restaurant_id', businessId)
-      .gte('reservation_date', startDate)
-      .lte('reservation_date', endDate)
-      .order('reservation_date', { ascending: true })
-      .order('reservation_time', { ascending: true });
+      .gte('scheduled_date', startDate)
+      .lte('scheduled_date', endDate)
+      .order('appointment_time', { ascending: true });
 
     if (error) {
-      console.error('Error obteniendo reservas del calendario:', error);
-      return res.status(500).json({ error: 'Error obteniendo reservas' });
+      console.error('Error obteniendo citas del calendario:', error);
+      return res.status(500).json({ error: 'Error obteniendo citas' });
     }
 
-    const formattedReservations = reservations.map(res => ({
-      id: res.id,
-      customerName: res.customers?.name || 'Sin nombre',
-      customerPhone: res.customers?.phone || '',
-      isVip: res.customers?.is_vip || false,
-      service: res.services?.name || res.special_requests || 'Servicio',
-      date: res.reservation_date,
-      time: res.reservation_time.substring(0, 5),
-      duration: res.services?.duration || 60,
-      status: res.status,
-      partySize: res.party_size,
-      specialRequests: res.special_requests
+    const formattedReservations = appointments.map(apt => ({
+      id: apt.id,
+      customerName: apt.customers?.name || apt.client_name,
+      customerPhone: apt.customers?.phone || apt.client_phone,
+      isVip: apt.customers?.is_vip || false,
+      service: apt.service_name || 'Reserva',
+      date: apt.scheduled_date,
+      time: new Date(apt.appointment_time).toLocaleTimeString('es-ES', { 
+        hour: '2-digit', 
+        minute: '2-digit',
+        timeZone: 'Europe/Madrid'
+      }),
+      duration: apt.duration_minutes || 90,
+      status: apt.status,
+      partySize: apt.party_size,
+      tableNumber: apt.tables?.table_number,
+      specialRequests: apt.notes
     }));
 
     res.json({ 

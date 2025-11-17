@@ -591,6 +591,7 @@ export async function createAppointment(req, res) {
       serviceName,
       serviceId,
       durationMinutes,
+      tablePreference, // Para restaurantes
     } = req.body;
 
     const restaurantId = req.business.id;
@@ -619,39 +620,38 @@ export async function createAppointment(req, res) {
 
     const totalDuration = servicesList.reduce((sum, s) => sum + (s.durationMinutes || 60), 0);
 
-    // CARGAR TIMEZONE DEL NEGOCIO
+    // 🔧 CARGAR restaurant con timezone y config
     const { data: business, error: businessError } = await supabase
       .from('restaurants')
-      .select('timezone')
+      .select('timezone, config, business_type')
       .eq('id', restaurantId)
       .single();
 
     if (businessError || !business) {
+      console.error('Error cargando negocio:', businessError);
       return res.status(500).json({ error: 'Error cargando configuración del negocio' });
     }
 
-    const businessTimezone = business?.timezone || 'Europe/Madrid';
+    const timezone = business?.timezone || 'Europe/Madrid';
+    const isRestaurant = business?.business_type === 'restaurant';
 
+    // 🔧 CONVERTIR fecha/hora local a UTC correctamente
     const appointmentDateTime = getUTCFromLocal(
       scheduledDate,
       appointmentTime,
-      businessTimezone
+      timezone
     );
 
     const scheduledDateOnly = `${scheduledDate}T00:00:00Z`;
 
     console.log('📅 Creando cita:');
     console.log('Input Local:', scheduledDate, appointmentTime);
-    console.log('Timezone:', businessTimezone);
+    console.log('Timezone:', timezone);
     console.log('Saving appointment_time (UTC):', appointmentDateTime.toISOString());
-    console.log('Saving scheduled_date:', scheduledDateOnly);
 
-    // =======================================================================
-    // ✅ 💡 PASO 0: DOBLE VERIFICACIÓN DE DISPONIBILIDAD
-    // =======================================================================
-    console.log(`[Create Check] Verificando capacidad para ${restaurantId} en ${appointmentDateTime.toISOString()}`);
+    // Verificación de disponibilidad
+    console.log(`[Create Check] Verificando capacidad para ${restaurantId}`);
 
-    // Llama al helper 'checkSlotCapacity'
     const availabilityCheck = await checkSlotCapacity(
       restaurantId,
       appointmentDateTime,
@@ -660,7 +660,6 @@ export async function createAppointment(req, res) {
 
     if (!availabilityCheck.available) {
       console.warn(`[Create Check] CONFLICT 409: ${availabilityCheck.reason}`);
-      // Error 409: Conflicto
       return res.status(409).json({
         error: 'Este horario ya no está disponible. Por favor, selecciona otro.',
         reason: availabilityCheck.reason
@@ -681,7 +680,6 @@ export async function createAppointment(req, res) {
     if (existingCustomer && !customerError) {
       customerId = existingCustomer.id;
 
-      //  Actualizar email si se proporciona
       if (clientEmail) {
         await supabase
           .from('customers')
@@ -708,29 +706,65 @@ export async function createAppointment(req, res) {
       customerId = newCustomer.id;
     }
 
+    // 🆕 ASIGNACIÓN AUTOMÁTICA DE MESA (solo para restaurantes)
+    let assignedTableId = null;
+    let assignmentReason = null;
+
+    if (isRestaurant) {
+      console.log('[Appointment] Restaurante detectado - Asignando mesa...');
+      
+      // Importar dinámicamente para evitar circular dependency
+      const { tableAssignmentEngine } = await import('../services/restaurant/tableAssignmentEngine.js');
+      
+      const assignmentResult = await tableAssignmentEngine.findBestTable({
+        restaurantId,
+        date: scheduledDate,
+        time: appointmentTime,
+        partySize: parseInt(req.body.partySize || 2),
+        duration: totalDuration,
+        preference: tablePreference,
+      });
+
+      if (assignmentResult.success) {
+        assignedTableId = assignmentResult.table.id;
+        assignmentReason = assignmentResult.reason;
+        console.log('[Appointment] Mesa asignada:', assignmentReason);
+      } else {
+        console.warn('[Appointment] No se pudo asignar mesa:', assignmentResult.message);
+      }
+    }
+
     // PASO 2: Crear cita principal
+    const appointmentInsert = {
+      restaurant_id: restaurantId,
+      client_name: clientName,
+      client_phone: clientPhone,
+      client_email: clientEmail || null,
+      scheduled_date: scheduledDateOnly,
+      appointment_time: appointmentDateTime.toISOString(), // ✅ USA LA CONVERSIÓN UTC
+      service_name: servicesList[0].serviceName,
+      service_id: servicesList[0].serviceId || null,
+      duration_minutes: totalDuration,
+      notes: notes || null,
+      status: 'confirmado',
+      customer_id: customerId,
+      table_id: assignedTableId, // 🆕 Asignar mesa
+    };
+
+    // 🆕 Agregar party_size solo para restaurantes
+    if (isRestaurant) {
+      appointmentInsert.party_size = parseInt(req.body.partySize || 2);
+    }
+
     const { data: appointment, error: appointmentError } = await supabase
       .from('appointments')
-      .insert({
-        restaurant_id: restaurantId,
-        client_name: clientName,
-        client_phone: clientPhone,
-        client_email: clientEmail || null,
-        scheduled_date: scheduledDateOnly,
-        appointment_time: appointmentDateTime.toISOString(),
-        service_name: servicesList[0].serviceName,
-        service_id: servicesList[0].serviceId || null,
-        duration_minutes: totalDuration,
-        notes: notes || null,
-        status: 'confirmado',
-        customer_id: customerId,
-      })
+      .insert(appointmentInsert)
       .select()
       .single();
 
     if (appointmentError) throw appointmentError;
 
-    // Insertar servicios en appointment_services
+    // PASO 3: Insertar servicios en appointment_services
     const appointmentServicesData = servicesList.map((service, index) => ({
       appointment_id: appointment.id,
       service_id: service.serviceId || null,
@@ -746,62 +780,74 @@ export async function createAppointment(req, res) {
 
     if (servicesError) {
       console.error('Error insertando servicios:', servicesError);
-      // Rollback: eliminar la cita si falla
       await supabase.from('appointments').delete().eq('id', appointment.id);
       throw servicesError;
     }
 
-    console.log('✅ Cita creada con', servicesList.length, 'servicios');
-
-    if (servicesError) {
-      console.error('Error insertando servicios:', servicesError);
-      // Rollback: eliminar la cita si falla
-      await supabase.from('appointments').delete().eq('id', appointment.id);
-      throw servicesError;
+    // 🆕 PASO 4: Crear registro de asignación de mesa si aplica
+    if (assignedTableId && isRestaurant) {
+      await supabase
+        .from('table_assignments')
+        .insert({
+          appointment_id: appointment.id,
+          table_id: assignedTableId,
+          assigned_by: req.user?.id || null,
+          assignment_type: 'automatic',
+        });
     }
 
-    console.log('✅ Cita creada con', servicesList.length, 'servicios');
-
-    if (clientEmail) {
-      console.log(`[Email] Preparando confirmación para: ${clientEmail}`);
-
-      const emailData = {
-        customer_email: clientEmail,
+    // PASO 5: Enviar email de confirmación
+    console.log('📧 Enviando email de confirmación...');
+    
+    try {
+      await emailService.sendAppointmentConfirmation({
         customer_name: clientName,
+        customer_email: clientEmail,
         appointment_date: scheduledDate,
         appointment_time: appointmentTime,
-        services: servicesList.map(s => ({
-          name: s.serviceName,
-          duration_minutes: s.durationMinutes
-        })),
         business_name: req.business.name,
-        business_phone: req.business.phone,
-        business_address: req.business.address,
-        business_email: req.business.email, // El 'replyTo'
+        business_address: req.business.address || 'Dirección no disponible',
+        business_phone: req.business.phone || 'Teléfono no disponible',
+        services: servicesList,
         total_duration: totalDuration,
-        appointment_id: appointment.id
-      };
-
-      // Llamar al servicio de email (sin 'await' para no bloquear)
-      emailService.sendAppointmentConfirmation(emailData).catch(emailError => {
-        // Si el email falla, solo lo logueamos. La cita ya se creó.
-        console.error(`[Email] ⚠️ Error enviando email (cita ${appointment.id} ya creada):`, emailError);
       });
+      
+      await supabase
+        .from('appointments')
+        .update({ confirmation_sent_at: new Date().toISOString() })
+        .eq('id', appointment.id);
 
-    } else {
-      console.log('[Email] No se envía email (cliente sin email registrado)');
+      console.log('✅ Email de confirmación enviado');
+    } catch (emailError) {
+      console.error('❌ Error enviando email:', emailError);
     }
 
-    res.status(201).json({
-      message: 'Cita creada correctamente',
-      appointment: {
-        ...appointment,
-        services: servicesList,
-      },
-    });
+    // Respuesta
+    const response = {
+      appointment,
+      message: 'Cita creada exitosamente',
+    };
+
+    // 🆕 Agregar info de mesa si se asignó
+    if (assignedTableId && isRestaurant) {
+      const { data: tableInfo } = await supabase
+        .from('tables')
+        .select('table_number, table_type')
+        .eq('id', assignedTableId)
+        .single();
+
+      response.tableAssignment = {
+        tableNumber: tableInfo?.table_number,
+        tableType: tableInfo?.table_type,
+        reason: assignmentReason,
+      };
+    }
+
+    res.status(201).json(response);
+
   } catch (error) {
-    console.error('❌ Error creando cita:', error);
-    res.status(500).json({ error: 'Error al crear la cita' });
+    console.error('Error en createAppointment:', error);
+    res.status(500).json({ error: 'Error en el servidor' });
   }
 }
 
