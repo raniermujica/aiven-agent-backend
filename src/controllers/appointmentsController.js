@@ -345,7 +345,7 @@ export async function checkAvailability(req, res) {
     // ========================================
     const requestedStartLocal = new Date(`${date}T${time}:00`);
     const requestedEndLocal = new Date(requestedStartLocal.getTime() + totalDuration * 60000);
-    
+
     const requestedStartUTC = fromZonedTime(requestedStartLocal, timezone);
     const requestedEndUTC = fromZonedTime(requestedEndLocal, timezone);
 
@@ -407,11 +407,11 @@ export async function checkAvailability(req, res) {
     const closeTime = daySchedule.close_time;
 
     if (!openTime || !closeTime) {
-      return res.json({ 
-        available: false, 
-        is_within_business_hours: false, 
-        business_hours_message: 'Horario no configurado', 
-        suggested_times: [] 
+      return res.json({
+        available: false,
+        is_within_business_hours: false,
+        business_hours_message: 'Horario no configurado',
+        suggested_times: []
       });
     }
 
@@ -448,7 +448,7 @@ export async function checkAvailability(req, res) {
     // ========================================
     const startOfDayLocal = new Date(date + 'T00:00:00');
     const endOfDayLocal = new Date(date + 'T23:59:59');
-    
+
     const startOfDayUTC = fromZonedTime(startOfDayLocal, timezone);
     const endOfDayUTC = fromZonedTime(endOfDayLocal, timezone);
 
@@ -478,7 +478,7 @@ export async function checkAvailability(req, res) {
 
     for (let minute = 0; minute < totalDuration; minute++) {
       const checkTime = new Date(requestedStartLocal.getTime() + minute * 60000);
-      
+
       const activeAppointments = busyBlocks.filter(block => {
         return checkTime >= block.start && checkTime < block.end;
       }).length;
@@ -496,16 +496,16 @@ export async function checkAvailability(req, res) {
     if (!isSlotAvailable) {
       const suggestedTimes = [];
       const SLOT_INTERVAL = 15;
-      
+
       let currentTime = new Date(date);
       currentTime.setHours(openHour, openMinute, 0, 0);
-      
+
       const closeDateTime = new Date(date);
       closeDateTime.setHours(closeHour, closeMinute, 0, 0);
 
       while (currentTime < closeDateTime && suggestedTimes.length < 5) {
         const serviceEnd = new Date(currentTime.getTime() + totalDuration * 60000);
-        
+
         if (serviceEnd > closeDateTime) break;
 
         // Verificar bloqueos para esta sugerencia
@@ -530,7 +530,7 @@ export async function checkAvailability(req, res) {
         let slotAvailable = true;
         for (let minute = 0; minute < totalDuration; minute++) {
           const checkTime = new Date(currentTime.getTime() + minute * 60000);
-          
+
           const active = busyBlocks.filter(block => {
             return checkTime >= block.start && checkTime < block.end;
           }).length;
@@ -712,10 +712,10 @@ export async function createAppointment(req, res) {
 
     if (isRestaurant) {
       console.log('[Appointment] Restaurante detectado - Asignando mesa...');
-      
+
       // Importar dinámicamente para evitar circular dependency
       const { tableAssignmentEngine } = await import('../services/restaurant/tableAssignmentEngine.js');
-      
+
       const assignmentResult = await tableAssignmentEngine.findBestTable({
         restaurantId,
         date: scheduledDate,
@@ -798,7 +798,7 @@ export async function createAppointment(req, res) {
 
     // PASO 5: Enviar email de confirmación
     console.log('📧 Enviando email de confirmación...');
-    
+
     try {
       await emailService.sendAppointmentConfirmation({
         customer_name: clientName,
@@ -811,7 +811,7 @@ export async function createAppointment(req, res) {
         services: servicesList,
         total_duration: totalDuration,
       });
-      
+
       await supabase
         .from('appointments')
         .update({ confirmation_sent_at: new Date().toISOString() })
@@ -1004,14 +1004,20 @@ export async function getAppointmentById(req, res) {
     const { data: appointment, error: appointmentError } = await supabase
       .from('appointments')
       .select(`
-        *,
-        services (
-          id,
-          name,
-          price,
-          duration_minutes
-        )
-      `)
+    *,
+    services (
+      id,
+      name,
+      price,
+      duration_minutes
+    ),
+    tables (
+      id,
+      table_number,
+      table_type,
+      capacity
+    )
+  `)
       .eq('id', appointmentId)
       .eq('restaurant_id', businessId)
       .single();
