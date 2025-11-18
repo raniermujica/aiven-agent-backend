@@ -6,7 +6,8 @@ import {
   deleteTable,
   assignTable,
   getTableStatus,
-  createTableAssignment
+  createTableAssignment,
+  getOccupancyByShift  // 🆕 NUEVO
 } from '../controllers/tablesController.js';
 import { authenticateToken } from '../middleware/auth.js';
 import { validateBusinessAccess, loadBusinessFromSlug } from '../middleware/tenant.js';
@@ -20,49 +21,58 @@ router.use(validateBusinessAccess);
 
 /**
  * @route   GET /api/tables
- * @desc    Obtener todas las mesas del restaurante
+ * @desc    Get all tables for the restaurant
  * @access  Private (Admin, Manager, Staff)
  */
 router.get('/', getTables);
 
 /**
  * @route   POST /api/tables
- * @desc    Crear una nueva mesa
+ * @desc    Create a new table
  * @access  Private (Admin, Manager)
  */
 router.post('/', createTable);
 
 /**
  * @route   PUT /api/tables/:id
- * @desc    Actualizar una mesa
+ * @desc    Update a table
  * @access  Private (Admin, Manager)
  */
 router.put('/:id', updateTable);
 
 /**
  * @route   DELETE /api/tables/:id
- * @desc    Eliminar una mesa (soft delete)
+ * @desc    Delete a table (soft delete)
  * @access  Private (Admin)
  */
 router.delete('/:id', deleteTable);
 
 /**
  * @route   POST /api/tables/assign
- * @desc    Asignar automáticamente una mesa
+ * @desc    Automatically assign a table
  * @access  Private (Admin, Manager, Staff)
  */
 router.post('/assign', assignTable);
 
 /**
  * @route   GET /api/tables/status
- * @desc    Obtener estado de mesas para un día
+ * @desc    Get table status for a specific day
  * @access  Private (Admin, Manager, Staff)
  */
 router.get('/status', getTableStatus);
 
 /**
+ * @route   GET /api/tables/occupancy
+ * @desc    Get table occupancy by shift (all day, lunch, dinner)
+ * @query   date - Date in YYYY-MM-DD format
+ * @access  Private (Admin, Manager, Staff)
+ * @example GET /api/tables/occupancy?date=2025-01-18
+ */
+router.get('/occupancy', getOccupancyByShift);
+
+/**
  * @route   POST /api/tables/assignments
- * @desc    Crear asignación manual de mesa
+ * @desc    Create manual table assignment
  * @access  Private (Admin, Manager, Staff)
  */
 router.post('/assignments', createTableAssignment);

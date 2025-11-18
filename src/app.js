@@ -18,6 +18,7 @@ import contactRoutes from './routes/contactRoutes.js';
 import publicRoutes from './routes/publicRoutes.js';
 import blockedSlotsRoutes from './routes/blockedSlotsRoutes.js';
 import tablesRoutes from './routes/tablesRoutes.js';
+import schedulesRoutes from './routes/schedulesRoutes.js';
 
 
 dotenv.config();
@@ -86,6 +87,7 @@ app.use('/api/emails', emailRoutes);
 app.use('/api/contact', contactRoutes);
 app.use('/api/blocked-slots', blockedSlotsRoutes);
 app.use('/api/tables', tablesRoutes);
+app.use('/api/schedules', schedulesRoutes);
 
 // Error handler 
 app.use((err, req, res, next) => {

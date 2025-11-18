@@ -409,4 +409,139 @@ export async function createTableAssignment(req, res) {
     console.error('Error en createTableAssignment:', error);
     res.status(500).json({ error: 'Error en el servidor' });
   }
+}
+
+/**
+ * Obtener ocupación de mesas por turnos 
+ */
+export async function getOccupancyByShift(req, res) {
+  try {
+    const businessId = req.business.id;
+    const { date } = req.query;
+
+    if (!date) {
+      return res.status(400).json({ error: 'Date required' });
+    }
+
+    // Get schedules configuration
+    const { data: business, error: businessError } = await supabase
+      .from('restaurants')
+      .select('config')
+      .eq('id', businessId)
+      .single();
+
+    if (businessError) throw businessError;
+
+    const config = typeof business.config === 'string' 
+      ? JSON.parse(business.config) 
+      : business.config || {};
+
+    const schedules = config?.schedules || {};
+    const openingTime = config?.opening_time || '08:00';
+    const closingTime = config?.closing_time || '23:00';
+
+    // Get all active tables
+    const { data: tables, error: tablesError } = await supabase
+      .from('tables')
+      .select('*')
+      .eq('restaurant_id', businessId)
+      .eq('is_active', true)
+      .order('table_number', { ascending: true });
+
+    if (tablesError) throw tablesError;
+
+    // Get appointments for the day
+    const { data: appointments, error: appError } = await supabase
+      .from('appointments')
+      .select(`
+        id,
+        table_id,
+        appointment_time,
+        duration_minutes,
+        party_size,
+        status,
+        client_name,
+        client_phone,
+        checked_in_at,
+        customers (name, phone, is_vip)
+      `)
+      .eq('restaurant_id', businessId)
+      .gte('scheduled_date', date)
+      .lte('scheduled_date', date)
+      .in('status', ['pendiente', 'confirmado']);
+
+    if (appError) throw appError;
+
+    // Classify by shift
+    const classifyByShift = (time) => {
+      if (schedules.lunch?.enabled) {
+        if (time >= schedules.lunch.start_time && time < (schedules.dinner?.start_time || closingTime)) {
+          return 'lunch';
+        }
+      }
+      if (schedules.dinner?.enabled) {
+        if (time >= schedules.dinner.start_time) {
+          return 'dinner';
+        }
+      }
+      return 'all_day';
+    };
+
+    // Map tables with their reservations by shift
+    const tablesWithOccupancy = tables.map(table => {
+      const tableReservations = (appointments || [])
+        .filter(apt => apt.table_id === table.id)
+        .map(apt => {
+          const appointmentDate = new Date(apt.appointment_time);
+          const time = `${String(appointmentDate.getUTCHours()).padStart(2, '0')}:${String(appointmentDate.getUTCMinutes()).padStart(2, '0')}`;
+          
+          return {
+            id: apt.id,
+            time,
+            shift: classifyByShift(time),
+            duration: apt.duration_minutes || 90,
+            partySize: apt.party_size,
+            status: apt.status,
+            clientName: apt.customers?.name || apt.client_name,
+            clientPhone: apt.customers?.phone || apt.client_phone,
+            isVip: apt.customers?.is_vip || false,
+            checkedIn: !!apt.checked_in_at,
+          };
+        });
+
+      return {
+        ...table,
+        reservations: tableReservations,
+        allDayReservations: tableReservations,
+        lunchReservations: tableReservations.filter(r => r.shift === 'lunch' || r.shift === 'all_day'),
+        dinnerReservations: tableReservations.filter(r => r.shift === 'dinner' || r.shift === 'all_day'),
+      };
+    });
+
+    res.json({
+      date,
+      shifts: {
+        all_day: {
+          name: 'All Day',
+          start_time: openingTime,
+          end_time: closingTime,
+        },
+        lunch: schedules.lunch?.enabled ? {
+          name: 'Lunch',
+          start_time: schedules.lunch.start_time,
+          end_time: closingTime,
+        } : null,
+        dinner: schedules.dinner?.enabled ? {
+          name: 'Dinner',
+          start_time: schedules.dinner.start_time,
+          end_time: closingTime,
+        } : null,
+      },
+      tables: tablesWithOccupancy,
+    });
+
+  } catch (error) {
+    console.error('Error in getOccupancyByShift:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
 };

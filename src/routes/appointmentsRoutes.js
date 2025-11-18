@@ -8,7 +8,9 @@ import {
   getAppointmentStats,
   checkAvailability,
   getAppointmentById,
-  updateAppointment
+  updateAppointment,
+  checkInAppointment,   
+  checkOutAppointment 
 } from '../controllers/appointmentsController.js';
 import { authenticateToken, requireRole } from '../middleware/auth.js';
 import { loadBusinessFromSlug, validateBusinessAccess } from '../middleware/tenant.js';
@@ -51,6 +53,12 @@ router.post('/check-availability', checkAvailability);
 
 // POST /api/appointments (Usado por el modal del Panel)
 router.post('/', requireRole('ADMIN', 'MANAGER', 'STAFF'), createAppointment);
+
+// POST /api/appointments/:appointmentId/check-in
+router.post('/:appointmentId/check-in', requireRole('ADMIN', 'MANAGER', 'STAFF'), checkInAppointment);
+
+// POST /api/appointments/:appointmentId/check-out
+router.post('/:appointmentId/check-out', requireRole('ADMIN', 'MANAGER', 'STAFF'), checkOutAppointment);
 
 // PATCH /api/appointments/:appointmentId/status
 router.patch('/:appointmentId/status', requireRole('ADMIN', 'MANAGER', 'STAFF'), updateAppointmentStatus);

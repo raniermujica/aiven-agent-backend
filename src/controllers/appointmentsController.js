@@ -1106,4 +1106,100 @@ export async function updateAppointment(req, res) {
     console.error('Error en updateAppointment:', error);
     res.status(500).json({ error: 'Error en el servidor' });
   }
+}
+
+/**
+ * Mark customer as "Seated" (Check-in)
+ */
+export async function checkInAppointment(req, res) {
+  try {
+    const { appointmentId } = req.params;
+    const businessId = req.business.id;
+
+    // Verify appointment belongs to restaurant
+    const { data: appointment, error: checkError } = await supabase
+      .from('appointments')
+      .select('id, status, table_id')
+      .eq('id', appointmentId)
+      .eq('restaurant_id', businessId)
+      .single();
+
+    if (checkError || !appointment) {
+      return res.status(404).json({ error: 'Appointment not found' });
+    }
+
+    // Update status
+    const { data, error } = await supabase
+      .from('appointments')
+      .update({
+        checked_in_at: new Date().toISOString(),
+        status: 'confirmado', // Keep confirmed but with checked_in_at
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', appointmentId)
+      .select()
+      .single();
+
+    if (error) {
+      console.error('Error checking in:', error);
+      return res.status(500).json({ error: 'Error updating appointment' });
+    }
+
+    res.json({
+      message: 'Customer marked as seated',
+      appointment: data,
+    });
+
+  } catch (error) {
+    console.error('Error in checkInAppointment:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+}
+
+/**
+ * Mark customer as "Left" (Check-out)
+ */
+export async function checkOutAppointment(req, res) {
+  try {
+    const { appointmentId } = req.params;
+    const businessId = req.business.id;
+
+    // Verify appointment belongs to restaurant
+    const { data: appointment, error: checkError } = await supabase
+      .from('appointments')
+      .select('id, status')
+      .eq('id', appointmentId)
+      .eq('restaurant_id', businessId)
+      .single();
+
+    if (checkError || !appointment) {
+      return res.status(404).json({ error: 'Appointment not found' });
+    }
+
+    // Update status to completed
+    const { data, error } = await supabase
+      .from('appointments')
+      .update({
+        checked_out_at: new Date().toISOString(),
+        status: 'completada',
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', appointmentId)
+      .select()
+      .single();
+
+    if (error) {
+      console.error('Error checking out:', error);
+      return res.status(500).json({ error: 'Error updating appointment' });
+    }
+
+    res.json({
+      message: 'Customer checked out, table is now free',
+      appointment: data,
+    });
+
+  } catch (error) {
+    console.error('Error in checkOutAppointment:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
 };
