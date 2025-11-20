@@ -7,6 +7,43 @@ const { fromZonedTime, toZonedTime, format } = require('date-fns-tz');
 const { startOfDay, endOfDay, parseISO } = require('date-fns');
 
 // ================================================================
+// HELPER: Detectar turnos
+// ================================================================
+
+function getShiftForTime(timeStr, shiftsConfig) {
+  if (!shiftsConfig) return null;
+
+  const getMinutes = (t) => {
+    const [h, m] = t.split(':').map(Number);
+    return h * 60 + m;
+  };
+
+  const timeMinutes = getMinutes(timeStr);
+
+  for (const [key, shift] of Object.entries(shiftsConfig)) {
+    // Verificar si el turno está habilitado (puede venir como bool o string)
+    const isEnabled = shift.enabled === true || shift.enabled === 'true';
+    
+    if (isEnabled) {
+      const start = getMinutes(shift.start);
+      const end = getMinutes(shift.end);
+      
+      // Lógica: si la hora solicitada está dentro del rango [inicio, fin)
+      if (timeMinutes >= start && timeMinutes < end) {
+        return { 
+          key: key,
+          name: shift.label, 
+          duration: parseInt(shift.duration) || 90, 
+          start: shift.start, 
+          end: shift.end 
+        };
+      }
+    }
+  }
+  return null;
+}
+
+// ================================================================
 // HELPER: Convertir (Fecha + Hora) local a un objeto Date UTC
 // ================================================================
 
@@ -297,10 +334,6 @@ export async function getTodayAppointments(req, res) {
 // CHECK AVAILABILITY 
 // ================================================================
 
-// ================================================================
-// CHECK AVAILABILITY 
-// ================================================================
-
 export async function checkAvailability(req, res) {
   try {
     const businessId = req.business.id;
@@ -366,17 +399,41 @@ export async function checkAvailability(req, res) {
 // CHECK AVAILABILITY - RESTAURANTES (con asignación de mesas)
 // ================================================================
 async function checkAvailabilityForRestaurant(req, res, params) {
-  const { business, businessId, date, time, totalDuration, timezone } = params;
+  const { business, businessId, date, time, totalDuration, partySize } = params;
 
-  console.log('[RESTAURANT] Verificando disponibilidad con algoritmo de mesas...');
+  console.log(`[RESTAURANT] Verificando: ${date} ${time} (${partySize || 2} pax)`);
 
-  // Aquí va tu lógica actual de restaurantes (asignación de mesas, etc.)
-  // Por ahora mantengo la estructura básica
+  // 1. VALIDACIÓN DE TURNOS (Lógica Nueva de Frontend)
+  // =================================================
+  let businessConfig = {};
+  if (typeof business.config === 'string') {
+    try { businessConfig = JSON.parse(business.config); } catch(e) {}
+  } else {
+    businessConfig = business.config || {};
+  }
 
+  const shiftsConfig = businessConfig.shifts;
+
+  // Si el restaurante tiene turnos configurados, respetarlos estrictamente
+  if (shiftsConfig) {
+    const activeShift = getShiftForTime(time, shiftsConfig); // Usa el helper que agregamos arriba
+    
+    if (!activeShift) {
+      return res.json({
+        available: false,
+        is_within_business_hours: false,
+        business_hours_message: `No hay turno de servicio disponible a las ${time}. Por favor revisa los horarios de comida/cena.`,
+        suggested_times: []
+      });
+    }
+  }
+
+  // 2. VALIDACIÓN DE HORARIO BASE DE DATOS (Lógica Original)
+  // ======================================================
+  // Consultamos si hay reglas específicas (festivos, días cerrados manualmente)
   const requestedDateObj = parseISO(date);
   const dayOfWeek = requestedDateObj.getDay();
 
-  // Obtener reglas de disponibilidad
   const { data: dayRules, error: rulesError } = await supabase
     .from('availability_rules')
     .select('open_time, close_time, is_closed')
@@ -388,13 +445,13 @@ async function checkAvailabilityForRestaurant(req, res, params) {
 
   if (rulesError && rulesError.code !== 'PGRST116') {
     console.error('Error cargando reglas:', rulesError);
-    return res.status(500).json({ error: 'Error cargando reglas' });
+    // No bloqueamos por error de DB, pero logueamos
   }
 
-  const daySchedule = dayRules || { is_closed: true };
+  const daySchedule = dayRules || { is_closed: false }; // Asumimos abierto si no hay reglas, o true si prefieres cerrado por defecto
 
   if (daySchedule.is_closed) {
-    const dayNames = ['domingos', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábados'];
+    const dayNames = ['domingo', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado'];
     return res.json({
       available: false,
       is_within_business_hours: false,
@@ -403,47 +460,61 @@ async function checkAvailabilityForRestaurant(req, res, params) {
     });
   }
 
-  // Verificar horario de apertura/cierre
-  const openTime = daySchedule.open_time || '10:00:00';
-  const closeTime = daySchedule.close_time || '20:00:00';
-
-  const [openHour, openMinute] = openTime.split(':').map(Number);
-  const [closeHour, closeMinute] = closeTime.split(':').map(Number);
-  const [requestedHour, requestedMinute] = time.split(':').map(Number);
-
-  const requestedMinutes = requestedHour * 60 + requestedMinute;
-  const openMinutes = openHour * 60 + openMinute;
-  const closeMinutes = closeHour * 60 + closeMinute;
-
-  if (requestedMinutes < openMinutes) {
-    return res.json({
-      available: false,
-      is_within_business_hours: false,
-      business_hours_message: `El horario de atención empieza a las ${openTime.substring(0, 5)}`,
-      suggested_times: []
-    });
+  // Validar horas de apertura general si existen en la regla
+  if (daySchedule.open_time && daySchedule.close_time) {
+    const reqTimeStr = time + ":00";
+    if (reqTimeStr < daySchedule.open_time || reqTimeStr > daySchedule.close_time) {
+       // Si hay turnos configurados, la validación del paso 1 ya se encargó, 
+       // pero esto sirve de doble seguridad.
+       return res.json({
+        available: false,
+        is_within_business_hours: false,
+        business_hours_message: `Horario general: ${daySchedule.open_time.slice(0,5)} - ${daySchedule.close_time.slice(0,5)}`,
+        suggested_times: []
+      });
+    }
   }
 
-  const serviceEndMinutes = requestedMinutes + totalDuration;
-  if (serviceEndMinutes > closeMinutes) {
+  // 3. LÓGICA DE MESAS 
+  // ======================================================
+  try {
+    // Importación dinámica para usar el motor existente
+    const { tableAssignmentEngine } = await import('../services/restaurant/tableAssignmentEngine.js');
+
+    // Simulamos la búsqueda de mesa. Si encuentra una ("success": true), hay disponibilidad.
+    const result = await tableAssignmentEngine.findBestTable({
+      restaurantId: businessId,
+      date,
+      time,
+      partySize: parseInt(partySize || 2), // Default 2 pax si no se especifica
+      duration: totalDuration || 90,       // Duración del turno detectado o 90 min
+      preference: null                     // Sin preferencia para chequear disponibilidad pura
+    });
+
+    if (!result.success) {
+      // El motor dice que NO hay mesas (conflicto real de ocupación)
+      return res.json({
+        available: false,
+        has_conflict: true,
+        is_within_business_hours: true,
+        business_hours_message: 'No hay mesas disponibles para este número de personas en este horario.',
+        suggested_times: [] // Aquí el motor podría devolver 'alternatives' si lo implementamos
+      });
+    }
+
+    // SI PASA TODO: Hay turno, está abierto y hay mesa física libre.
     return res.json({
-      available: false,
-      is_within_business_hours: false,
-      business_hours_message: `La cita terminaría después del cierre (${closeTime.substring(0, 5)})`,
+      available: true,
+      has_conflict: false,
+      is_within_business_hours: true,
+      business_hours_message: 'Mesa disponible',
       suggested_times: []
     });
+
+  } catch (error) {
+    console.error('[RESTAURANT] Error en motor de mesas:', error);
+    return res.status(500).json({ error: 'Error interno verificando disponibilidad de mesas' });
   }
-
-  // Lógica de mesas para restaurantes (mantén tu algoritmo actual)
-  // ...
-
-  return res.json({
-    available: true,
-    has_conflict: false,
-    is_within_business_hours: true,
-    business_hours_message: 'Slot disponible',
-    suggested_times: []
-  });
 }
 
 // ================================================================
