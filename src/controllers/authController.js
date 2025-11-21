@@ -9,12 +9,11 @@ export async function login(req, res) {
 
     console.log('🔐 Intento de login:', { email, slug });
 
-    // Validaciones
     if (!email || !password) {
       return res.status(400).json({ error: 'Email y contraseña son requeridos' });
     }
 
-    // Buscar usuario por email
+    // 1. CORRECCIÓN: Agregamos 'timezone' al select
     let query = supabase
       .from('restaurant_users')
       .select(`
@@ -25,7 +24,8 @@ export async function login(req, res) {
           slug,
           business_type,
           logo_url,
-          is_active
+          is_active,
+          timezone 
         )
       `)
       .eq('email', email)
@@ -33,29 +33,17 @@ export async function login(req, res) {
 
     const { data: users, error: userError } = await query;
 
-    console.log('👤 Usuarios encontrados:', users?.length || 0);
-    console.log('❌ Error de búsqueda:', userError);
-
     if (userError || !users || users.length === 0) {
-      console.error('Error buscando usuario:', userError);
       return res.status(401).json({ error: 'Credenciales inválidas' });
     }
 
     const user = users[0];
-    console.log('✅ Usuario encontrado:', user.email);
-    console.log('🔑 Hash almacenado:', user.password_hash);
-
-    // Verificar contraseña
-    console.log('🔐 Verificando password...');
     const isValidPassword = await bcrypt.compare(password, user.password_hash);
-    console.log('✅ Password válido:', isValidPassword);
 
     if (!isValidPassword) {
-      console.log('❌ Password incorrecto');
       return res.status(401).json({ error: 'Credenciales inválidas' });
     }
 
-    // Generar token JWT
     const token = jwt.sign(
       { 
         userId: user.id,
@@ -68,7 +56,6 @@ export async function login(req, res) {
       { expiresIn: process.env.JWT_EXPIRES_IN }
     );
 
-    // Preparar datos del usuario
     const userData = {
       id: user.id,
       name: user.name,
@@ -77,7 +64,6 @@ export async function login(req, res) {
       isSuperAdmin: user.is_platform_admin,
     };
 
-    // Agregar datos del negocio si aplica
     if (user.restaurants) {
       const businessConfig = getBusinessTypeConfig(user.restaurants.business_type);
       
@@ -87,11 +73,12 @@ export async function login(req, res) {
         slug: user.restaurants.slug,
         type: user.restaurants.business_type,
         logoUrl: user.restaurants.logo_url,
+        // 2. CORRECCIÓN: Pasamos la timezone al frontend (con fallback)
+        timezone: user.restaurants.timezone || 'Europe/Madrid', 
         ...businessConfig,
       };
     }
 
-    console.log('🎉 Login exitoso');
     res.json({
       token,
       user: userData,
@@ -105,27 +92,48 @@ export async function login(req, res) {
 
 export async function getMe(req, res) {
   try {
-    // req.user viene del middleware authenticateToken
-    const user = req.user;
+    // El middleware authenticateToken ya trae el usuario básico, 
+    // pero necesitamos refrescar los datos del negocio incluyendo timezone.
+    
+    const { data: userFull, error } = await supabase
+      .from('restaurant_users')
+      .select(`
+        *,
+        restaurants (
+          id,
+          name,
+          slug,
+          business_type,
+          logo_url,
+          is_active,
+          timezone
+        )
+      `)
+      .eq('id', req.user.id)
+      .single();
+
+    if (error || !userFull) {
+        return res.status(404).json({error: 'Usuario no encontrado'});
+    }
 
     const userData = {
-      id: user.id,
-      name: user.name,
-      email: user.email,
-      role: user.role,
-      isSuperAdmin: user.is_platform_admin,
+      id: userFull.id,
+      name: userFull.name,
+      email: userFull.email,
+      role: userFull.role,
+      isSuperAdmin: userFull.is_platform_admin,
     };
 
-    // Agregar datos del negocio si aplica
-    if (user.restaurants) {
-      const businessConfig = getBusinessTypeConfig(user.restaurants.business_type);
+    if (userFull.restaurants) {
+      const businessConfig = getBusinessTypeConfig(userFull.restaurants.business_type);
       
       userData.business = {
-        id: user.restaurants.id,
-        name: user.restaurants.name,
-        slug: user.restaurants.slug,
-        type: user.restaurants.business_type,
-        logoUrl: user.restaurants.logo_url,
+        id: userFull.restaurants.id,
+        name: userFull.restaurants.name,
+        slug: userFull.restaurants.slug,
+        type: userFull.restaurants.business_type,
+        logoUrl: userFull.restaurants.logo_url,
+        timezone: userFull.restaurants.timezone || 'Europe/Madrid',
         ...businessConfig,
       };
     }

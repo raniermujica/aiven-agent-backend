@@ -2,6 +2,8 @@ import sgMail from '@sendgrid/mail';
 import dotenv from 'dotenv';
 
 dotenv.config();
+console.log('[EmailService] 🔍 Carga inicial. API Key presente:', !!process.env.SENDGRID_API_KEY);
+console.log('[EmailService] 🔍 FROM_EMAIL configurado:', process.env.SENDGRID_FROM_EMAIL);
 
 // Configurar SendGrid
 sgMail.setApiKey(process.env.SENDGRID_API_KEY);
@@ -16,6 +18,9 @@ class EmailService {
      * Enviar email de confirmación de cita
      */
     async sendAppointmentConfirmation(appointmentData) {
+      console.log('----------------------------------------------------------------');
+        console.log('[EmailService] 🚀 sendAppointmentConfirmation INICIADO');
+        console.log('[EmailService] 📦 Datos recibidos:', JSON.stringify(appointmentData, null, 2));
         try {
             const {
                 customer_email,
@@ -208,7 +213,7 @@ ${business_name}
                 to: customer_email,
                 from: {
                     email: FROM_EMAIL,
-                    name: FROM_NAME
+                    name: business_name || FROM_NAME
                 },
                 subject: `🔔 Recordatorio: Tu cita mañana en ${business_name}`,
                 text: `

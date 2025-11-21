@@ -1,10 +1,25 @@
 import { supabase } from '../config/database.js';
 import { createRequire } from 'module';
 import emailService from '../services/emailService.js';
+
 const require = createRequire(import.meta.url);
 
 const { fromZonedTime, toZonedTime, format } = require('date-fns-tz');
 const { startOfDay, endOfDay, parseISO } = require('date-fns');
+
+
+// ================================================================
+// HELPER: Detectar Zona Horaria
+// ================================================================
+
+async function getBusinessTimezone(restaurantId) {
+  const { data } = await supabase
+    .from('restaurants')
+    .select('timezone')
+    .eq('id', restaurantId)
+    .single();
+  return data?.timezone || 'Europe/Madrid';
+}
 
 // ================================================================
 // HELPER: Detectar turnos
@@ -23,19 +38,19 @@ function getShiftForTime(timeStr, shiftsConfig) {
   for (const [key, shift] of Object.entries(shiftsConfig)) {
     // Verificar si el turno está habilitado (puede venir como bool o string)
     const isEnabled = shift.enabled === true || shift.enabled === 'true';
-    
+
     if (isEnabled) {
       const start = getMinutes(shift.start);
       const end = getMinutes(shift.end);
-      
+
       // Lógica: si la hora solicitada está dentro del rango [inicio, fin)
       if (timeMinutes >= start && timeMinutes < end) {
-        return { 
+        return {
           key: key,
-          name: shift.label, 
-          duration: parseInt(shift.duration) || 90, 
-          start: shift.start, 
-          end: shift.end 
+          name: shift.label,
+          duration: parseInt(shift.duration) || 90,
+          start: shift.start,
+          end: shift.end
         };
       }
     }
@@ -207,6 +222,7 @@ export async function getAppointments(req, res) {
   try {
     const { date, status } = req.query;
     const businessId = req.business.id;
+    const timezone = await getBusinessTimezone(businessId);
 
     let query = supabase
       .from('appointments')
@@ -247,9 +263,14 @@ export async function getAppointments(req, res) {
           .select('*', { count: 'exact', head: true })
           .eq('appointment_id', appointment.id);
 
+        const utcDate = new Date(appointment.appointment_time);
+        const zonedDate = toZonedTime(utcDate, timezone);
+
         return {
           ...appointment,
           services_count: count || 0,
+          formatted_time: format(zonedDate, 'HH:mm', { timeZone: timezone }),
+          formatted_date: format(zonedDate, 'yyyy-MM-dd', { timeZone: timezone })
         };
       })
     );
@@ -269,6 +290,7 @@ export async function getAppointments(req, res) {
 export async function getTodayAppointments(req, res) {
   try {
     const businessId = req.business.id;
+    const timezone = await getBusinessTimezone(businessId);
 
     // 1. Cargar el timezone del negocio
     const { data: business, error: businessError } = await supabase
@@ -315,9 +337,14 @@ export async function getTodayAppointments(req, res) {
           .select('*', { count: 'exact', head: true })
           .eq('appointment_id', appointment.id);
 
+        const utcDate = new Date(appointment.appointment_time);
+        const zonedDate = toZonedTime(utcDate, timezone);
+
         return {
           ...appointment,
           services_count: count || 0,
+          formatted_time: format(zonedDate, 'HH:mm', { timeZone: timezone }),
+          formatted_date: format(zonedDate, 'yyyy-MM-dd', { timeZone: timezone })
         };
       })
     );
@@ -407,7 +434,7 @@ async function checkAvailabilityForRestaurant(req, res, params) {
   // =================================================
   let businessConfig = {};
   if (typeof business.config === 'string') {
-    try { businessConfig = JSON.parse(business.config); } catch(e) {}
+    try { businessConfig = JSON.parse(business.config); } catch (e) { }
   } else {
     businessConfig = business.config || {};
   }
@@ -417,7 +444,7 @@ async function checkAvailabilityForRestaurant(req, res, params) {
   // Si el restaurante tiene turnos configurados, respetarlos estrictamente
   if (shiftsConfig) {
     const activeShift = getShiftForTime(time, shiftsConfig); // Usa el helper que agregamos arriba
-    
+
     if (!activeShift) {
       return res.json({
         available: false,
@@ -464,12 +491,12 @@ async function checkAvailabilityForRestaurant(req, res, params) {
   if (daySchedule.open_time && daySchedule.close_time) {
     const reqTimeStr = time + ":00";
     if (reqTimeStr < daySchedule.open_time || reqTimeStr > daySchedule.close_time) {
-       // Si hay turnos configurados, la validación del paso 1 ya se encargó, 
-       // pero esto sirve de doble seguridad.
-       return res.json({
+      // Si hay turnos configurados, la validación del paso 1 ya se encargó, 
+      // pero esto sirve de doble seguridad.
+      return res.json({
         available: false,
         is_within_business_hours: false,
-        business_hours_message: `Horario general: ${daySchedule.open_time.slice(0,5)} - ${daySchedule.close_time.slice(0,5)}`,
+        business_hours_message: `Horario general: ${daySchedule.open_time.slice(0, 5)} - ${daySchedule.close_time.slice(0, 5)}`,
         suggested_times: []
       });
     }
@@ -593,7 +620,7 @@ async function checkAvailabilityForBeauty(req, res, params) {
 
   // 3. OBTENER CAPACIDAD (Personal / Sillas disponibles)
   // En Beauty, max_capacity suele ser el número de estilistas o sillas simultáneas.
-  let maxCapacity = 1; 
+  let maxCapacity = 1;
   if (business.config) {
     if (typeof business.config === 'object') {
       maxCapacity = business.config.max_appointments_per_slot || 1;
@@ -601,7 +628,7 @@ async function checkAvailabilityForBeauty(req, res, params) {
       try {
         const parsed = JSON.parse(business.config);
         maxCapacity = parsed.max_appointments_per_slot || 1;
-      } catch (e) {}
+      } catch (e) { }
     }
   }
 
@@ -641,7 +668,7 @@ async function checkAvailabilityForBeauty(req, res, params) {
   const localDateTimeString = `${date}T${time}:00`;
   const requestedStartUTC = fromZonedTime(localDateTimeString, timezone); // UTC Real del slot pedido
   const requestedStartLocal = toZonedTime(requestedStartUTC, timezone); // Hora local equivalente
-  
+
   let maxConcurrentFound = 0;
 
   // Barremos cada minuto de la duración del servicio solicitado
@@ -660,7 +687,7 @@ async function checkAvailabilityForBeauty(req, res, params) {
     // Si en algún momento superamos la capacidad, el slot no es válido
     if (activeAppointments >= maxCapacity) {
       console.log(`[BEAUTY] Slot ocupado a las ${checkTime.getHours()}:${checkTime.getMinutes()}`);
-      
+
       // Generar sugerencias (opcional, lógica simplificada aquí)
       return res.json({
         available: false,
@@ -699,13 +726,13 @@ export async function createAppointment(req, res) {
       serviceName,
       serviceId,
       durationMinutes,
-      tablePreference, 
-      partySize // Asegurarnos de recibir esto
+      tablePreference,
+      partySize
     } = req.body;
 
     const restaurantId = req.business.id;
 
-    // 1. VALIDACIONES BÁSICAS
+    // VALIDACIONES
     if (!clientName || !clientPhone || !scheduledDate || !appointmentTime) {
       return res.status(400).json({
         error: 'Nombre, teléfono, fecha y hora son requeridos',
@@ -713,15 +740,13 @@ export async function createAppointment(req, res) {
     }
 
     if (clientEmail && !clientEmail.match(/^[^\s@]+@[^\s@]+\.[^\s@]+$/)) {
-      return res.status(400).json({
-        error: 'El formato del email no es válido',
-      });
+      return res.status(400).json({ error: 'El formato del email no es válido' });
     }
 
-    // 2. CARGAR NEGOCIO (MOVIDO AL PRINCIPIO PARA SABER EL TIPO)
+    // CARGAR NEGOCIO - AHORA INCLUIMOS LOS CAMPOS NECESARIOS
     const { data: business, error: businessError } = await supabase
       .from('restaurants')
-      .select('timezone, config, business_type')
+      .select('name, phone, address, email, timezone, config, business_type')
       .eq('id', restaurantId)
       .single();
 
@@ -733,49 +758,37 @@ export async function createAppointment(req, res) {
     const timezone = business?.timezone || 'Europe/Madrid';
     const isRestaurant = business?.business_type === 'restaurant';
 
-    // 3. PREPARAR SERVICIOS (Lógica condicional)
+    // SERVICIOS
     let servicesList = services && services.length > 0
       ? services
       : (serviceId ? [{ serviceId, serviceName, durationMinutes }] : []);
 
-    // VALIDACIÓN DE SERVICIOS: Solo si NO es restaurante
     if (!isRestaurant && servicesList.length === 0) {
-      return res.status(400).json({
-        error: 'Debe seleccionar al menos un servicio',
-      });
+      return res.status(400).json({ error: 'Debe seleccionar al menos un servicio' });
     }
 
-    // SI ES RESTAURANTE y no hay servicios, crear uno dummy para consistencia
     if (isRestaurant && servicesList.length === 0) {
       servicesList = [{
         serviceName: 'Reserva de Mesa',
-        durationMinutes: durationMinutes || 90, // Default 90 min para restaurantes si no viene nada
+        durationMinutes: durationMinutes || 90,
         price: 0
       }];
     }
 
     const totalDuration = servicesList.reduce((sum, s) => sum + (s.durationMinutes || 60), 0);
 
-    // 4. CONVERTIR fecha/hora local a UTC correctamente
+    // FECHA/HORA → UTC
     const appointmentDateTime = getUTCFromLocal(
       scheduledDate,
       appointmentTime,
       timezone
     );
 
-    const scheduledDateOnly = `${scheduledDate}T00:00:00Z`;
-
-    console.log('📅 Creando cita (Tipo:', isRestaurant ? 'Restaurante' : 'Beauty', '):');
-    console.log('Input Local:', scheduledDate, appointmentTime);
     console.log('Saving appointment_time (UTC):', appointmentDateTime.toISOString());
 
-    // 5. VERIFICAR DISPONIBILIDAD (Solo capacidad general o mesas)
-    if (isRestaurant) {
-       // Para restaurantes, la disponibilidad se chequea al buscar mesa (más abajo)
-       // Opcional: podrías hacer un chequeo rápido de aforo aquí si quisieras
-    } else {
-       // Para Beauty, chequeamos slots
-       const availabilityCheck = await checkSlotCapacity(
+    // DISPONIBILIDAD
+    if (!isRestaurant) {
+      const availabilityCheck = await checkSlotCapacity(
         restaurantId,
         appointmentDateTime,
         totalDuration
@@ -789,7 +802,7 @@ export async function createAppointment(req, res) {
       }
     }
 
-    // PASO 6: Buscar o crear cliente
+    // BUSCAR O CREAR CLIENTE
     let customerId;
     const { data: existingCustomer, error: customerError } = await supabase
       .from('customers')
@@ -800,13 +813,13 @@ export async function createAppointment(req, res) {
 
     if (existingCustomer && !customerError) {
       customerId = existingCustomer.id;
-      // Actualizar email/nombre si cambiaron
+
       if (clientEmail || clientName !== existingCustomer.name) {
         await supabase.from('customers').update({
-            email: clientEmail || existingCustomer.email,
-            name: clientName,
-            updated_at: new Date().toISOString()
-          }).eq('id', customerId);
+          email: clientEmail || existingCustomer.email,
+          name: clientName,
+          updated_at: new Date().toISOString()
+        }).eq('id', customerId);
       }
     } else {
       const { data: newCustomer, error: createError } = await supabase
@@ -824,17 +837,14 @@ export async function createAppointment(req, res) {
       customerId = newCustomer.id;
     }
 
-    // PASO 7: ASIGNACIÓN AUTOMÁTICA DE MESA (Solo Restaurantes)
+    // ASIGNACIÓN DE MESA (solo restaurante)
     let assignedTableId = null;
     let assignmentReason = null;
 
     if (isRestaurant) {
-      console.log('[Appointment] Restaurante detectado - Asignando mesa...');
-      
-      // Importar dinámicamente
       const { tableAssignmentEngine } = await import('../services/restaurant/tableAssignmentEngine.js');
 
-      const finalPartySize = parseInt(partySize || req.body.partySize || 2);
+      const finalPartySize = parseInt(partySize || 2);
 
       const assignmentResult = await tableAssignmentEngine.findBestTable({
         restaurantId,
@@ -848,37 +858,28 @@ export async function createAppointment(req, res) {
       if (assignmentResult.success) {
         assignedTableId = assignmentResult.table.id;
         assignmentReason = assignmentResult.reason;
-        console.log('[Appointment] Mesa asignada:', assignmentReason);
-      } else {
-        console.warn('[Appointment] No se pudo asignar mesa:', assignmentResult.message);
-        // Opcional: Si es estricto, podrías retornar error aquí:
-        // return res.status(409).json({ error: 'No hay mesas disponibles' });
       }
     }
 
-    // PASO 8: Crear cita principal
+    // CREAR CITA
     const appointmentInsert = {
       restaurant_id: restaurantId,
       customer_id: customerId,
       table_id: assignedTableId,
-      scheduled_date: scheduledDateOnly,
+      scheduled_date: scheduledDate,   // ← CAMBIADO: ANTES era scheduledDateOnly
       appointment_time: appointmentDateTime.toISOString(),
       client_name: clientName,
       client_phone: clientPhone,
       client_email: clientEmail || null,
-      // Usar el nombre del primer servicio o "Reserva"
-      service_name: servicesList[0].serviceName || 'Reserva', 
+      service_name: servicesList[0].serviceName || 'Reserva',
       service_id: servicesList[0].serviceId || null,
       duration_minutes: totalDuration,
       notes: notes || null,
       status: 'confirmado',
-      source: 'manual', // O lo que venga en body
+      source: 'manual',
       created_by: req.user?.id || null,
+      party_size: isRestaurant ? parseInt(partySize || 2) : null
     };
-
-    if (isRestaurant) {
-      appointmentInsert.party_size = parseInt(partySize || 2);
-    }
 
     const { data: appointment, error: appointmentError } = await supabase
       .from('appointments')
@@ -888,7 +889,7 @@ export async function createAppointment(req, res) {
 
     if (appointmentError) throw appointmentError;
 
-    // PASO 9: Insertar servicios en appointment_services
+    // INSERTAR SERVICIOS
     const appointmentServicesData = servicesList.map((service, index) => ({
       appointment_id: appointment.id,
       service_id: service.serviceId || null,
@@ -898,16 +899,9 @@ export async function createAppointment(req, res) {
       display_order: index,
     }));
 
-    const { error: servicesError } = await supabase
-      .from('appointment_services')
-      .insert(appointmentServicesData);
+    await supabase.from('appointment_services').insert(appointmentServicesData);
 
-    if (servicesError) {
-      console.error('Error insertando servicios:', servicesError);
-      // No borramos la cita, pero logueamos el error
-    }
-
-    // PASO 10: Crear registro de asignación de mesa
+    // ASIGNACIÓN DE MESA
     if (assignedTableId && isRestaurant) {
       await supabase.from('table_assignments').insert({
         appointment_id: appointment.id,
@@ -917,10 +911,39 @@ export async function createAppointment(req, res) {
       });
     }
 
-    // PASO 11: Enviar email (Opcional, no bloqueante)
-    // ... (código de email existente) ...
+    // ----------------------------
+    //   EMAIL RESTAURADO (versión válida)
+    // ----------------------------
+    if (clientEmail) {
+      console.log(`[Email] Preparando confirmación para: ${clientEmail}`);
 
-    // Respuesta
+      const emailData = {
+        customer_email: clientEmail,
+        customer_name: clientName,
+        appointment_date: scheduledDate,       // ← RESTAURADO COMO ANTES
+        appointment_time: appointmentTime,
+        services: servicesList.map(s => ({
+          name: s.serviceName,
+          duration_minutes: s.durationMinutes
+        })),
+        business_name: business.name,
+        business_phone: business.phone,
+        business_address: business.address,
+        business_email: business.email,
+        total_duration: totalDuration,
+        appointment_id: appointment.id
+      };
+
+      // No aguardar (no await)
+      emailService.sendAppointmentConfirmation(emailData).catch(emailError => {
+        console.error(`[Email] ⚠️ Error enviando email (cita ${appointment.id} ya creada):`, emailError);
+      });
+
+    } else {
+      console.log('[Email] No se envía email (cliente sin email registrado)');
+    }
+
+    // RESPUESTA
     const response = {
       appointment,
       message: 'Cita creada exitosamente',
@@ -947,6 +970,7 @@ export async function createAppointment(req, res) {
     res.status(500).json({ error: 'Error en el servidor', details: error.message });
   }
 }
+
 
 // ================================================================
 // UPDATE APPOINTMENT STATUS
@@ -1304,5 +1328,117 @@ export async function checkOutAppointment(req, res) {
   } catch (error) {
     console.error('Error in checkOutAppointment:', error);
     res.status(500).json({ error: 'Server error' });
+  }
+};
+
+// ================================================================
+// CRON JOB: RECORDATORIOS MASIVOS (EJECUTAR CADA HORA)
+// ================================================================
+export async function sendBatchReminders(req, res) {
+  console.log('🔔 [Cron] Ejecución horaria de recordatorios...');
+  
+  try {
+    // 1. Obtener todos los negocios activos
+    const { data: businesses, error: bizError } = await supabase
+      .from('restaurants')
+      .select('id, name, timezone, phone, address, email')
+      .eq('is_active', true);
+
+    if (bizError) throw bizError;
+
+    let totalSent = 0;
+    const report = [];
+    const TARGET_HOUR = 9; // 🕘 Hora a la que queremos enviar (09:00 AM)
+
+    // 2. Iterar por cada negocio
+    for (const business of businesses) {
+      const timezone = business.timezone || 'Europe/Madrid';
+      
+      // ✅ VALIDACIÓN DE HORA LOCAL
+      // Obtenemos la hora actual EN LA ZONA HORARIA DEL NEGOCIO
+      const nowInBiz = toZonedTime(new Date(), timezone);
+      // Extraemos la hora (0-23)
+      const currentHour = parseInt(format(nowInBiz, 'H', { timeZone: timezone }));
+
+      // Si NO son las 9 AM en su zona, saltamos este negocio
+      if (currentHour !== TARGET_HOUR) {
+        // Opcional: Loguear solo en modo debug para no ensuciar
+        // console.log(`[Cron] Saltando ${business.name} (Son las ${currentHour}:00 en ${timezone})`);
+        continue; 
+      }
+
+      console.log(`[Cron] 🎯 Son las ${TARGET_HOUR}:00 en ${business.name} (${timezone}). Procesando...`);
+
+      // --- A PARTIR DE AQUÍ ES TU LÓGICA EXISTENTE ---
+      
+      // Calcular "Mañana" en la hora local del negocio
+      const tomorrow = new Date(nowInBiz);
+      tomorrow.setDate(tomorrow.getDate() + 1);
+      const tomorrowStr = format(tomorrow, 'yyyy-MM-dd', { timeZone: timezone });
+
+      // Calcular rango UTC (Todo el día de mañana)
+      const startLocal = `${tomorrowStr}T00:00:00`;
+      const endLocal = `${tomorrowStr}T23:59:59`;
+      
+      const startUTC = fromZonedTime(startLocal, timezone).toISOString();
+      const endUTC = fromZonedTime(endLocal, timezone).toISOString();
+
+      // Buscar citas CONFIRMADAS
+      const { data: appointments } = await supabase
+        .from('appointments')
+        .select(`
+          *,
+          services:appointment_services ( service_name, duration_minutes )
+        `)
+        .eq('restaurant_id', business.id)
+        .eq('status', 'confirmado')
+        .gte('appointment_time', startUTC)
+        .lte('appointment_time', endUTC);
+
+      if (!appointments || appointments.length === 0) continue;
+
+      // Enviar correos... (Tu lógica de envío existente sigue aquí tal cual)
+      for (const apt of appointments) {
+         // ... (Copia tu lógica de envío de email aquí o déjala si ya estaba)
+         if (!apt.client_email) continue;
+
+         try {
+            const aptDate = toZonedTime(new Date(apt.appointment_time), timezone);
+            const timeStr = format(aptDate, 'HH:mm', { timeZone: timezone });
+
+            const servicesList = apt.services && apt.services.length > 0 
+              ? apt.services.map(s => ({ name: s.service_name, duration_minutes: s.duration_minutes }))
+              : [{ name: apt.service_name, duration_minutes: apt.duration_minutes }];
+
+            await emailService.sendAppointmentReminder({
+              customer_email: apt.client_email,
+              customer_name: apt.client_name,
+              appointment_date: apt.scheduled_date,
+              appointment_time: timeStr,
+              services: servicesList,
+              business_name: business.name,
+              business_phone: business.phone,
+              business_address: business.address,
+              appointment_id: apt.id
+            });
+            totalSent++;
+         } catch (err) {
+            console.error(`[Cron] Error en cita ${apt.id}:`, err.message);
+         }
+      }
+      
+      report.push({ business: business.name, found: appointments.length, timezone });
+    }
+
+    res.json({
+      success: true,
+      message: `Ejecución horaria completada. Se procesaron recordatorios para la zona horaria de las ${TARGET_HOUR}:00.`,
+      stats: { emails_sent: totalSent },
+      processed_businesses: report
+    });
+
+  } catch (error) {
+    console.error('[Cron] Error crítico:', error);
+    res.status(500).json({ error: 'Error en proceso de cron' });
   }
 };

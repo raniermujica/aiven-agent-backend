@@ -2,11 +2,16 @@ import express from 'express';
 import { supabase } from '../config/database.js';
 import { sendConfirmationEmail } from '../controllers/emailController.js';
 import { createRequire } from 'module';
+import { sendBatchReminders } from '../controllers/appointmentsController.js';
 
 const require = createRequire(import.meta.url);
 const { fromZonedTime, toZonedTime } = require('date-fns-tz');
 
 const router = express.Router();
+
+
+// POST /api/public/cron/run-reminders
+router.post('/cron/run-reminders', sendBatchReminders);
 
 // GET /api/public/:businessSlug/services
 router.get('/:businessSlug/services', async (req, res) => {
@@ -402,5 +407,7 @@ router.post('/:businessSlug/appointments', async (req, res) => {
     res.status(500).json({ error: 'Error al crear la cita' });
   }
 });
+
+
 
 export default router;
