@@ -20,15 +20,15 @@ router.use(validateBusinessAccess);
 router.get('/', getBlockedSlots);
 
 // POST /api/blocked-slots - Crear nuevo bloqueo (solo ADMIN y MANAGER)
-router.post('/', requireRole(['ADMIN', 'MANAGER']), createBlockedSlot);
+router.post('/', requireRole('ADMIN', 'MANAGER'), createBlockedSlot);
 
 // POST /api/blocked-slots/check - Verificar si hay bloqueo en fecha/hora
 router.post('/check', checkBlocked); 
 
 // PATCH /api/blocked-slots/:blockId - Actualizar bloqueo (solo ADMIN y MANAGER)
-router.patch('/:blockId', requireRole(['ADMIN', 'MANAGER']), updateBlockedSlot);
+router.patch('/:blockId', requireRole('ADMIN', 'MANAGER'), updateBlockedSlot);
 
 // DELETE /api/blocked-slots/:blockId - Eliminar bloqueo (solo ADMIN y MANAGER)
-router.delete('/:blockId', requireRole(['ADMIN', 'MANAGER']), deleteBlockedSlot);
+router.delete('/:blockId', requireRole('ADMIN', 'MANAGER'), deleteBlockedSlot);
 
 export default router;
