@@ -15,7 +15,15 @@ class TableAssignmentEngine {
    */
   async findBestTable({ restaurantId, date, time, partySize, duration = 90, preference = null }) {
     try {
-      console.log('[TableEngine] Buscando mesa para:', { restaurantId, date, time, partySize, duration, preference });
+      console.log('[TableEngine] 🔍 Parámetros recibidos:', {
+        restaurantId,
+        date,
+        time,
+        partySize,
+        partySizeType: typeof partySize,
+        duration,
+        preference
+      });
 
       // 1. Verificar restaurante y obtener TIMEZONE
       const { data: restaurant, error: restError } = await supabase
@@ -65,8 +73,14 @@ class TableAssignmentEngine {
       const suitableTables = allTables.filter(table => {
         const capacity = table.capacity || table.max_capacity || 0;
         const minCap = table.min_capacity || 1;
+
+        console.log(`[TableEngine] Mesa ${table.table_number}: capacity=${capacity}, minCap=${minCap}, partySize=${partySize}, match=${isMatch}`); onsole.log(`[TableEngine] Mesa ${table.table_number}: capacity=${capacity}, minCap=${minCap}, partySize=${partySize}, match=${isMatch}`);
+
         return partySize >= minCap && partySize <= capacity;
       });
+
+      console.log(`[TableEngine] ✅ Mesas adecuadas encontradas: ${suitableTables.length}/${allTables.length}`);
+
 
       // Si no hay mesas individuales, buscar combinaciones
       if (suitableTables.length === 0) {
@@ -187,7 +201,7 @@ class TableAssignmentEngine {
   calculateTableScore({ table, partySize, preference, fillOrder, tableSizeOrder }) {
     let score = 100;
     const capacity = table.capacity || 0;
-    
+
     // 1. Ajuste de capacidad (evitar mesas grandes para grupos pequeños)
     const wastedSeats = capacity - partySize;
     if (wastedSeats === 0) score += 40;
@@ -196,7 +210,7 @@ class TableAssignmentEngine {
 
     // 2. Preferencia de zona
     if (preference && table.table_type === preference) score += 50;
-    
+
     // 3. Prioridad configurada (menor número = mayor prioridad)
     score += Math.max(0, 20 - (table.priority || 0) * 2);
 

@@ -54,7 +54,7 @@ router.get('/:businessSlug/info', async (req, res) => {
     const { businessSlug } = req.params;
 
     // Obtener restaurant por slug
-       const { data: restaurant, error: restaurantError } = await supabase
+    const { data: restaurant, error: restaurantError } = await supabase
       .from('restaurants')
       .select('id, name, slug, phone, email, address, logo_url, description, business_hours, business_type')
       .eq('slug', businessSlug)
@@ -91,7 +91,7 @@ router.post('/:businessSlug/check-availability', async (req, res) => {
     }
 
     const timezone = restaurant.timezone || 'Europe/Madrid';
-    
+
     // Obtener capacidad de config
     let maxCapacity = 1;
     if (restaurant.config && typeof restaurant.config === 'object') {
@@ -166,7 +166,7 @@ router.post('/:businessSlug/check-availability', async (req, res) => {
 
     const openTimeLocal = new Date(date);
     openTimeLocal.setHours(openHour, openMinute, 0, 0);
-    
+
     const closeTimeLocal = new Date(date);
     closeTimeLocal.setHours(closeHour, closeMinute, 0, 0);
 
@@ -210,12 +210,12 @@ router.post('/:businessSlug/check-availability', async (req, res) => {
     // ========================================
     const availableSlots = [];
     const SLOT_INTERVAL = 15;
-    
+
     let currentTime = new Date(openTimeLocal);
 
     while (currentTime < closeTimeLocal) {
       const serviceEndTime = new Date(currentTime.getTime() + durationMinutes * 60000);
-      
+
       if (serviceEndTime > closeTimeLocal) {
         break;
       }
@@ -240,7 +240,7 @@ router.post('/:businessSlug/check-availability', async (req, res) => {
 
       for (let minute = 0; minute < durationMinutes; minute++) {
         const checkTime = new Date(currentTime.getTime() + minute * 60000);
-        
+
         const activeAppointments = busyBlocks.filter(block => {
           return checkTime >= block.start && checkTime < block.end;
         }).length;
@@ -316,7 +316,7 @@ router.post('/:businessSlug/appointments', async (req, res) => {
     // ✅ CONVERTIR HORA LOCAL A UTC
     const localDateTimeString = `${scheduledDate}T${appointmentTime}:00`;
     const appointmentDateTimeUTC = fromZonedTime(localDateTimeString, timezone);
-    
+
     console.log('🕐 Conversión de hora:');
     console.log('  - Local:', localDateTimeString);
     console.log('  - UTC:', appointmentDateTimeUTC.toISOString());
@@ -332,7 +332,7 @@ router.post('/:businessSlug/appointments', async (req, res) => {
 
     if (existingCustomer) {
       customerId = existingCustomer.id;
-      
+
       if (clientEmail) {
         await supabase
           .from('customers')
@@ -367,24 +367,41 @@ router.post('/:businessSlug/appointments', async (req, res) => {
 
     if (isRestaurant && partySize) {
       console.log('🍽️ Iniciando asignación de mesa...');
-      
-      const { tableAssignmentEngine } = await import('../services/restaurant/tableAssignmentEngine.js');
+      console.log('🍽️ partySize recibido:', partySize, 'tipo:', typeof partySize);
 
-      const assignmentResult = await tableAssignmentEngine.findBestTable({
-        restaurantId: restaurant.id,
-        date: scheduledDate,
-        time: appointmentTime,
-        partySize: parseInt(partySize),
-        duration: durationMinutes || 90,
-        preference: null
-      });
+      const finalPartySize = parseInt(partySize, 10);
 
-      if (assignmentResult.success) {
-        assignedTableId = assignmentResult.table.id;
-        assignmentReason = assignmentResult.reason;
-        console.log(`✅ Mesa asignada: ${assignmentResult.table.table_number}`);
+      if (isNaN(finalPartySize) || finalPartySize < 1) {
+        console.error('❌ partySize inválido:', partySize);
       } else {
-        console.warn('⚠️ No se pudo asignar mesa:', assignmentResult.message);
+        const { tableAssignmentEngine } = await import('../services/restaurant/tableAssignmentEngine.js');
+
+        console.log('🍽️ Buscando mesa para:', {
+          restaurantId: restaurant.id,
+          date: scheduledDate,
+          time: appointmentTime,
+          partySize: finalPartySize,
+          duration: durationMinutes || 90
+        });
+
+        const assignmentResult = await tableAssignmentEngine.findBestTable({
+          restaurantId: restaurant.id,
+          date: scheduledDate,
+          time: appointmentTime,
+          partySize: finalPartySize,
+          duration: durationMinutes || 90,
+          preference: null
+        });
+
+        console.log('🍽️ Resultado de asignación:', assignmentResult);
+
+        if (assignmentResult.success) {
+          assignedTableId = assignmentResult.table.id;
+          assignmentReason = assignmentResult.reason;
+          console.log(`✅ Mesa asignada: ${assignmentResult.table.table_number} (ID: ${assignedTableId})`);
+        } else {
+          console.warn('⚠️ No se pudo asignar mesa:', assignmentResult.message);
+        }
       }
     }
 
@@ -394,7 +411,7 @@ router.post('/:businessSlug/appointments', async (req, res) => {
       .insert({
         restaurant_id: restaurant.id,
         customer_id: customerId,
-        table_id: assignedTableId, 
+        table_id: assignedTableId,
         service_id: servicesList[0].id || serviceId,
         service_name: servicesList[0].name || serviceName,
         duration_minutes: durationMinutes,
@@ -405,8 +422,8 @@ router.post('/:businessSlug/appointments', async (req, res) => {
         client_email: clientEmail,
         status: 'confirmado',
         notes: notes ? `${notes}\n\n[Agendado desde enlace público]` : '[Agendado desde enlace público]',
-        party_size: isRestaurant ? parseInt(partySize) : null, 
-        source: 'web' 
+        party_size: isRestaurant ? parseInt(partySize) : null,
+        source: 'web'
       })
       .select('*')
       .single();

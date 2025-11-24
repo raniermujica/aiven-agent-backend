@@ -10,7 +10,7 @@ export async function sendConfirmationEmail(req, res) {
     const { appointmentId } = req.params;
     console.log(`[Email] Enviando confirmación para cita: ${appointmentId}`);
 
-    // Obtener datos de la cita con servicios
+    // ✅ OBTENER DATOS CON BUSINESS_TYPE
     const { data: appointment, error } = await supabase
       .from('appointments')
       .select(`
@@ -24,9 +24,12 @@ export async function sendConfirmationEmail(req, res) {
           name,
           phone,
           address,
-          email  
+          email,
+          business_type
         ),
         appointment_services (
+          service_name,
+          duration_minutes,
           services (
             name,
             duration_minutes
@@ -54,23 +57,30 @@ export async function sendConfirmationEmail(req, res) {
       hour12: false
     });
 
-    // Formatear datos para el email
+    // ✅ DETECTAR SI ES RESTAURANTE
+    const isRestaurant = appointment.restaurants.business_type === 'restaurant';
+
+    // ✅ FORMATEAR SERVICIOS (Manejar service_id null)
+    const services = appointment.appointment_services.map(as => ({
+      name: as.service_name || as.services?.name || 'Servicio',
+      duration_minutes: as.duration_minutes || as.services?.duration_minutes || 60
+    }));
+
     // Formatear datos para el email
     const emailData = {
       customer_email: appointment.customers.email,
       customer_name: appointment.customers.name,
       appointment_date: appointment.scheduled_date,
       appointment_time: timeString,
-      services: appointment.appointment_services.map(as => ({
-        name: as.service_name || as.services?.name || 'Servicio', 
-        duration_minutes: as.duration_minutes || as.services?.duration_minutes || 60 
-      })),
+      services,
       business_name: appointment.restaurants.name,
       business_phone: appointment.restaurants.phone,
       business_address: appointment.restaurants.address,
       business_email: appointment.restaurants.email,
       total_duration: appointment.duration_minutes,
-      appointment_id: appointment.id
+      appointment_id: appointment.id,
+      is_restaurant: isRestaurant, // ✅ AÑADIR
+      party_size: appointment.party_size // ✅ AÑADIR
     };
 
     console.log('[EmailService] 📧 Datos del email:', JSON.stringify(emailData, null, 2));
@@ -114,13 +124,9 @@ export async function sendPendingReminders(req, res) {
     const tomorrow = new Date();
     tomorrow.setHours(tomorrow.getHours() + 24);
 
-    const tomorrowStart = new Date(tomorrow);
-    tomorrowStart.setHours(0, 0, 0, 0);
+    console.log('[Email] Buscando citas para:', tomorrow);
 
-    const tomorrowEnd = new Date(tomorrow);
-    tomorrowEnd.setHours(23, 59, 59, 999);
-
-    // Buscar citas pendientes para mañana sin recordatorio enviado
+    // Buscar citas que necesitan recordatorio
     const { data: appointments, error } = await supabase
       .from('appointments')
       .select(`
@@ -134,48 +140,37 @@ export async function sendPendingReminders(req, res) {
           name,
           phone,
           address,
-          email 
+          email,
+          business_type
         ),
         appointment_services (
+          service_name,
+          duration_minutes,
           services (
             name,
             duration_minutes
           )
         )
       `)
-      .gte('scheduled_date', tomorrowStart.toISOString())
-      .lte('scheduled_date', tomorrowEnd.toISOString())
-      .in('status', ['confirmado', 'pendiente'])
-      .is('reminder_sent_at', null);
+      .eq('status', 'confirmado')
+      .is('reminder_sent_at', null)
+      .gte('appointment_time', tomorrow.toISOString())
+      .lte('appointment_time', new Date(tomorrow.getTime() + 2 * 60 * 60 * 1000).toISOString());
 
-    if (error) {
-      throw error;
-    }
+    if (error) throw error;
 
     if (!appointments || appointments.length === 0) {
-      console.log('[Email] No hay recordatorios pendientes');
-      return res.json({
-        success: true,
-        message: 'No hay recordatorios pendientes',
-        sent: 0
-      });
+      console.log('[Email] No hay citas para recordar');
+      return res.json({ success: true, sent: 0 });
     }
 
-    console.log(`[Email] ${appointments.length} recordatorios por enviar`);
+    console.log(`[Email] Enviando ${appointments.length} recordatorios...`);
 
     let sent = 0;
-    let failed = 0;
-
-    // Enviar recordatorios
     for (const appointment of appointments) {
-      try {
-        if (!appointment.customers?.email) {
-          console.log(`[Email] Saltando cita ${appointment.id} - sin email`);
-          failed++;
-          continue;
-        }
+      if (!appointment.customers?.email) continue;
 
-        // Formatear appointment_time (es timestamp completo)
+      try {
         const appointmentTimeObj = new Date(appointment.appointment_time);
         const timeString = appointmentTimeObj.toLocaleTimeString('es-ES', {
           hour: '2-digit',
@@ -183,55 +178,42 @@ export async function sendPendingReminders(req, res) {
           hour12: false
         });
 
-        const emailData = {
+        const isRestaurant = appointment.restaurants.business_type === 'restaurant';
+        
+        const services = appointment.appointment_services.map(as => ({
+          name: as.service_name || as.services?.name || 'Servicio',
+          duration_minutes: as.duration_minutes || as.services?.duration_minutes || 60
+        }));
+
+        await emailService.sendAppointmentReminder({
           customer_email: appointment.customers.email,
           customer_name: appointment.customers.name,
           appointment_date: appointment.scheduled_date,
           appointment_time: timeString,
-          services: appointment.appointment_services.map(as => ({
-            name: as.services.name,
-            duration_minutes: as.services.duration_minutes
-          })),
+          services,
           business_name: appointment.restaurants.name,
           business_phone: appointment.restaurants.phone,
           business_address: appointment.restaurants.address,
-          business_email: appointment.restaurants.email, // <-- 💡 CORRECCIÓN AÑADIDA
-          appointment_id: appointment.id
-        };
+          appointment_id: appointment.id,
+          is_restaurant: isRestaurant,
+          party_size: appointment.party_size
+        });
 
-        await emailService.sendAppointmentReminder(emailData);
-
-        // Actualizar que se envió recordatorio
         await supabase
           .from('appointments')
-          .update({
-            reminder_sent_at: new Date().toISOString()
-          })
+          .update({ reminder_sent_at: new Date().toISOString() })
           .eq('id', appointment.id);
 
         sent++;
-
       } catch (emailError) {
-        console.error(`[Email] Error enviando a ${appointment.id}:`, emailError);
-        failed++;
+        console.error(`[Email] Error enviando recordatorio para ${appointment.id}:`, emailError);
       }
     }
 
-    console.log(`[Email] Recordatorios completados: ${sent} enviados, ${failed} fallidos`);
-
-    res.json({
-      success: true,
-      message: 'Recordatorios procesados',
-      sent,
-      failed,
-      total: appointments.length
-    });
+    res.json({ success: true, sent });
 
   } catch (error) {
     console.error('[Email] Error en sendPendingReminders:', error);
-    res.status(500).json({
-      error: 'Error al procesar recordatorios',
-      details: error.message
-    });
+    res.status(500).json({ error: 'Error al enviar recordatorios' });
   }
 };
