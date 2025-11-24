@@ -70,17 +70,18 @@ class TableAssignmentEngine {
       }
 
       // 4. Filtrar mesas adecuadas por capacidad
+      // 4. Filtrar mesas adecuadas por capacidad
       const suitableTables = allTables.filter(table => {
         const capacity = table.capacity || table.max_capacity || 0;
         const minCap = table.min_capacity || 1;
+        const isMatch = partySize >= minCap && partySize <= capacity;
 
-        console.log(`[TableEngine] Mesa ${table.table_number}: capacity=${capacity}, minCap=${minCap}, partySize=${partySize}, match=${isMatch}`); onsole.log(`[TableEngine] Mesa ${table.table_number}: capacity=${capacity}, minCap=${minCap}, partySize=${partySize}, match=${isMatch}`);
+        console.log(`[TableEngine] Mesa ${table.table_number}: capacity=${capacity}, minCap=${minCap}, partySize=${partySize}, match=${isMatch}`);
 
-        return partySize >= minCap && partySize <= capacity;
+        return isMatch;
       });
 
       console.log(`[TableEngine] ✅ Mesas adecuadas encontradas: ${suitableTables.length}/${allTables.length}`);
-
 
       // Si no hay mesas individuales, buscar combinaciones
       if (suitableTables.length === 0) {
@@ -91,7 +92,7 @@ class TableAssignmentEngine {
           partySize,
           duration,
           allTables,
-          timezone // Pasamos el timezone
+          timezone
         });
       }
 
