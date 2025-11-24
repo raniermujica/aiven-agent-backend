@@ -394,7 +394,7 @@ router.post('/:businessSlug/appointments', async (req, res) => {
       .insert({
         restaurant_id: restaurant.id,
         customer_id: customerId,
-        table_id: assignedTableId, // ✅ AÑADIR
+        table_id: assignedTableId, 
         service_id: servicesList[0].id || serviceId,
         service_name: servicesList[0].name || serviceName,
         duration_minutes: durationMinutes,
@@ -405,8 +405,8 @@ router.post('/:businessSlug/appointments', async (req, res) => {
         client_email: clientEmail,
         status: 'confirmado',
         notes: notes ? `${notes}\n\n[Agendado desde enlace público]` : '[Agendado desde enlace público]',
-        party_size: isRestaurant ? parseInt(partySize) : null, // ✅ AÑADIR
-        source: 'public_link' // ✅ AÑADIR
+        party_size: isRestaurant ? parseInt(partySize) : null, 
+        source: 'web' 
       })
       .select('*')
       .single();
