@@ -101,6 +101,31 @@ router.post('/:businessSlug/check-availability', async (req, res) => {
     console.log('[Availability] Business type:', restaurant.business_type);
     console.log('[Availability] Is restaurant:', isRestaurant);
 
+    // ✅ OBTENER BLOQUEOS DEL DÍA (COMÚN PARA AMBOS)
+    const dayStartUTC = fromZonedTime(new Date(date + 'T00:00:00'), timezone);
+    const dayEndUTC = fromZonedTime(new Date(date + 'T23:59:59'), timezone);
+
+    const { data: dayBlocks, error: blocksError } = await supabase
+      .from('blocked_slots')
+      .select('blocked_from, blocked_until, reason, block_type')
+      .eq('restaurant_id', restaurant.id)
+      .eq('is_active', true)
+      .is('table_id', null)  // Solo bloqueos generales
+      .or(`and(blocked_from.lte.${dayEndUTC.toISOString()},blocked_until.gte.${dayStartUTC.toISOString()})`);
+
+    if (blocksError) {
+      console.error('[Availability] Error getting blocks:', blocksError);
+    }
+
+    const blockedRanges = (dayBlocks || []).map(block => ({
+      start: toZonedTime(new Date(block.blocked_from), timezone),
+      end: toZonedTime(new Date(block.blocked_until), timezone),
+      reason: block.reason,
+      type: block.block_type
+    }));
+
+    console.log('[Availability] Blocked ranges:', blockedRanges.length);
+
     // ========================================
     // RESTAURANTES: Validar mesas disponibles
     // ========================================
@@ -138,7 +163,7 @@ router.post('/:businessSlug/check-availability', async (req, res) => {
       // Importar motor de asignación
       const { tableAssignmentEngine } = await import('../services/restaurant/tableAssignmentEngine.js');
 
-      const availableSlots = [];
+      let availableSlots = [];
       const SLOT_INTERVAL = 15;
 
       // Generar todos los slots posibles de los turnos
@@ -179,8 +204,32 @@ router.post('/:businessSlug/check-availability', async (req, res) => {
 
       console.log(`[Availability] Slots posibles generados: ${possibleSlots.length}`);
 
-      // Verificar cada slot con el motor de asignación
-      for (const timeSlot of possibleSlots) {
+      // ✅ FILTRAR SLOTS BLOQUEADOS PRIMERO
+      const unblockedSlots = possibleSlots.filter(slot => {
+        const [hours, minutes] = slot.split(':').map(Number);
+        const slotTime = new Date(date);
+        slotTime.setHours(hours, minutes, 0, 0);
+
+        const isBlocked = blockedRanges.some(block => {
+          const slotEndTime = new Date(slotTime.getTime() + durationMinutes * 60000);
+          return (
+            (slotTime >= block.start && slotTime < block.end) ||
+            (slotEndTime > block.start && slotEndTime <= block.end) ||
+            (slotTime <= block.start && slotEndTime >= block.end)
+          );
+        });
+
+        if (isBlocked) {
+          console.log(`[Availability] 🚫 ${slot} - Bloqueado`);
+        }
+
+        return !isBlocked;
+      });
+
+      console.log(`[Availability] Slots NO bloqueados: ${unblockedSlots.length}/${possibleSlots.length}`);
+
+      // ✅ VERIFICAR DISPONIBILIDAD DE MESAS SOLO EN SLOTS NO BLOQUEADOS
+      for (const timeSlot of unblockedSlots) {
         try {
           const result = await tableAssignmentEngine.findBestTable({
             restaurantId: restaurant.id,
@@ -202,7 +251,7 @@ router.post('/:businessSlug/check-availability', async (req, res) => {
         }
       }
 
-      console.log(`[Availability] 🎯 Resultado: ${availableSlots.length}/${possibleSlots.length} slots disponibles`);
+      console.log(`[Availability] 🎯 Resultado final: ${availableSlots.length}/${possibleSlots.length} slots disponibles`);
       return res.json({ availableSlots });
     }
 
@@ -227,30 +276,6 @@ router.post('/:businessSlug/check-availability', async (req, res) => {
     }
 
     console.log('[Availability] Max capacity from config:', maxCapacity);
-
-    const dayStartUTC = fromZonedTime(new Date(date + 'T00:00:00'), timezone);
-    const dayEndUTC = fromZonedTime(new Date(date + 'T23:59:59'), timezone);
-
-    const { data: dayBlocks, error: blocksError } = await supabase
-      .from('blocked_slots')
-      .select('blocked_from, blocked_until, reason, block_type')
-      .eq('restaurant_id', restaurant.id)
-      .eq('is_active', true)
-      .is('table_id', null)
-      .or(`and(blocked_from.lte.${dayEndUTC.toISOString()},blocked_until.gte.${dayStartUTC.toISOString()})`);
-
-    if (blocksError) {
-      console.error('[Availability] Error getting blocks:', blocksError);
-    }
-
-    const blockedRanges = (dayBlocks || []).map(block => ({
-      start: toZonedTime(new Date(block.blocked_from), timezone),
-      end: toZonedTime(new Date(block.blocked_until), timezone),
-      reason: block.reason,
-      type: block.block_type
-    }));
-
-    console.log('[Availability] Blocked ranges:', blockedRanges.length);
 
     const { data: availabilityRules, error: rulesError } = await supabase
       .from('availability_rules')
@@ -318,6 +343,7 @@ router.post('/:businessSlug/check-availability', async (req, res) => {
         break;
       }
 
+      // ✅ VALIDAR BLOQUEOS (YA ESTABA CORRECTO PARA BEAUTY)
       const isInBlockedRange = blockedRanges.some(block => {
         return (
           (currentTime >= block.start && currentTime < block.end) ||
@@ -405,7 +431,7 @@ router.post('/:businessSlug/appointments', async (req, res) => {
       return res.status(404).json({ error: 'Negocio no encontrado' });
     }
 
-    const restaurantId = restaurant.id;  // ✅ DEFINIR AQUÍ
+    const restaurantId = restaurant.id;
     const timezone = restaurant.timezone || 'Europe/Madrid';
     const isRestaurant = restaurant.business_type === 'restaurant';
 
@@ -429,7 +455,7 @@ router.post('/:businessSlug/appointments', async (req, res) => {
       .from('customers')
       .select('id')
       .eq('phone', clientPhone)
-      .eq('restaurant_id', restaurantId)  // ✅ Usar restaurantId
+      .eq('restaurant_id', restaurantId)
       .single();
 
     if (existingCustomer) {
@@ -445,7 +471,7 @@ router.post('/:businessSlug/appointments', async (req, res) => {
       const { data: newCustomer, error: customerError } = await supabase
         .from('customers')
         .insert({
-          restaurant_id: restaurantId,  // ✅ Usar restaurantId
+          restaurant_id: restaurantId,
           name: clientName,
           phone: clientPhone,
           email: clientEmail,
@@ -499,11 +525,11 @@ router.post('/:businessSlug/appointments', async (req, res) => {
           });
 
           const assignmentResult = await tableAssignmentEngine.findBestTable({
-            restaurantId,  // ✅ CAMBIO CRÍTICO
+            restaurantId,
             date: scheduledDate,
             time: appointmentTime,
             partySize: finalPartySize,
-            duration: totalDuration,  // ✅ Usar totalDuration
+            duration: totalDuration,
             preference: null
           });
 
@@ -533,12 +559,12 @@ router.post('/:businessSlug/appointments', async (req, res) => {
     const { data: appointment, error: appointmentError } = await supabase
       .from('appointments')
       .insert({
-        restaurant_id: restaurantId,  // ✅ Usar restaurantId
+        restaurant_id: restaurantId,
         customer_id: customerId,
         table_id: assignedTableId,
         service_id: servicesList[0].id || serviceId,
         service_name: servicesList[0].name || serviceName,
-        duration_minutes: totalDuration,  // ✅ Usar totalDuration
+        duration_minutes: totalDuration,
         scheduled_date: scheduledDate,
         appointment_time: appointmentDateTimeUTC.toISOString(),
         client_name: clientName,
