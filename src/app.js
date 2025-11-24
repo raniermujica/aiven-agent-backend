@@ -6,7 +6,7 @@ import authRoutes from './routes/authRoutes.js';
 import superAdminRoutes from './routes/superAdminRoutes.js';
 import reservationsRoutes from './routes/reservationsRoutes.js';
 import appointmentsRoutes from './routes/appointmentsRoutes.js';
-import servicesRoutes from './routes/servicesRoutes.js'; 
+import servicesRoutes from './routes/servicesRoutes.js';
 import customersRoutes from './routes/customersRoutes.js';
 import waitlistRoutes from './routes/waitlistRoutes.js';
 import analyticsRoutes from './routes/analyticsRoutes.js';
@@ -25,14 +25,15 @@ dotenv.config();
 
 const app = express();
 
-const N8N_URL = process.env.N8N_URL; 
-const VERCEL_FRONTEND_URL = process.env.VERCEL_FRONTEND_URL; 
+const N8N_URL = process.env.N8N_URL;
+const VERCEL_FRONTEND_URL = process.env.VERCEL_FRONTEND_URL;
 
 // Lista de orígenes en los que confiamos
 const whitelist = [
   'https://www.agentpaul.es',
+  'https://book.agentpaul.es',
   N8N_URL,
-  VERCEL_FRONTEND_URL, 
+  VERCEL_FRONTEND_URL,
   'http://localhost:5173',
   'http://localhost:5174'
 ];
@@ -48,20 +49,20 @@ const corsOptions = {
   }
 };
 
-app.use(cors(corsOptions)); 
+app.use(cors(corsOptions));
 
 app.use(express.json());
-app.use(express.urlencoded({ extended: true })); 
+app.use(express.urlencoded({ extended: true }));
 
 // Health check 
 app.get('/health', (req, res) => {
- res.json({ status: 'ok', message: 'Backend multi-tenant funcionando' });
+  res.json({ status: 'ok', message: 'Backend multi-tenant funcionando' });
 });
 
 // Middleware 
 // app.use(cors());
 app.use(express.json());
-app.use(express.urlencoded({ extended: true })); 
+app.use(express.urlencoded({ extended: true }));
 
 // Health check 
 app.get('/health', (req, res) => {
