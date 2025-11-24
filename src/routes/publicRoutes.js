@@ -292,20 +292,32 @@ router.post('/:businessSlug/appointments', async (req, res) => {
       durationMinutes,
       scheduledDate,
       appointmentTime,
-      services,
+      services, // ✅ Array completo
       notes
     } = req.body;
 
-    // Obtener restaurant por slug
+    console.log('📥 Datos recibidos:', { clientName, scheduledDate, appointmentTime, services });
+
+    // Obtener restaurant con timezone
     const { data: restaurant, error: restaurantError } = await supabase
       .from('restaurants')
-      .select('id')
+      .select('id, timezone, name, phone, email, address')
       .eq('slug', businessSlug)
       .single();
 
     if (restaurantError || !restaurant) {
       return res.status(404).json({ error: 'Negocio no encontrado' });
     }
+
+    const timezone = restaurant.timezone || 'Europe/Madrid';
+
+    // ✅ CONVERTIR HORA LOCAL A UTC
+    const localDateTimeString = `${scheduledDate}T${appointmentTime}:00`;
+    const appointmentDateTimeUTC = fromZonedTime(localDateTimeString, timezone);
+    
+    console.log('🕐 Conversión de hora:');
+    console.log('  - Local:', localDateTimeString);
+    console.log('  - UTC:', appointmentDateTimeUTC.toISOString());
 
     // Crear o buscar cliente
     let customerId;
@@ -318,6 +330,14 @@ router.post('/:businessSlug/appointments', async (req, res) => {
 
     if (existingCustomer) {
       customerId = existingCustomer.id;
+      
+      // Actualizar email si es nuevo
+      if (clientEmail) {
+        await supabase
+          .from('customers')
+          .update({ email: clientEmail, name: clientName })
+          .eq('id', customerId);
+      }
     } else {
       const { data: newCustomer, error: customerError } = await supabase
         .from('customers')
@@ -334,17 +354,24 @@ router.post('/:businessSlug/appointments', async (req, res) => {
       customerId = newCustomer.id;
     }
 
+    // ✅ PREPARAR LISTA DE SERVICIOS
+    const servicesList = services && services.length > 0
+      ? services
+      : [{ id: serviceId, name: serviceName, duration_minutes: durationMinutes }];
+
+    console.log('📋 Servicios a guardar:', servicesList);
+
     // Crear cita
     const { data: appointment, error: appointmentError } = await supabase
       .from('appointments')
       .insert({
         restaurant_id: restaurant.id,
         customer_id: customerId,
-        service_id: serviceId,
-        service_name: serviceName,
+        service_id: servicesList[0].id || serviceId,
+        service_name: servicesList[0].name || serviceName,
         duration_minutes: durationMinutes,
-        scheduled_date: scheduledDate || appointmentTime,
-        appointment_time: appointmentTime,
+        scheduled_date: scheduledDate,
+        appointment_time: appointmentDateTimeUTC.toISOString(), // ✅ UTC
         client_name: clientName,
         client_phone: clientPhone,
         client_email: clientEmail,
@@ -356,19 +383,29 @@ router.post('/:businessSlug/appointments', async (req, res) => {
 
     if (appointmentError) throw appointmentError;
 
-    const { error: appointmentServiceError } = await supabase
-      .from('appointment_services')
-      .insert({
-        appointment_id: appointment.id,
-        service_id: serviceId,
-      });
+    console.log('✅ Cita creada:', appointment.id);
 
-    if (appointmentServiceError) {
-      console.error('Error creando appointment_service:', appointmentServiceError);
-      // No fallar si esto falla, solo loguear
+    // ✅ INSERTAR TODOS LOS SERVICIOS
+    const appointmentServicesData = servicesList.map((service, index) => ({
+      appointment_id: appointment.id,
+      service_id: service.id || null,
+      service_name: service.name,
+      duration_minutes: service.duration_minutes || 60,
+      price: service.price || 0,
+      display_order: index
+    }));
+
+    const { error: servicesError } = await supabase
+      .from('appointment_services')
+      .insert(appointmentServicesData);
+
+    if (servicesError) {
+      console.error('❌ Error insertando servicios:', servicesError);
+    } else {
+      console.log(`✅ ${appointmentServicesData.length} servicio(s) guardado(s)`);
     }
 
-    // ← Enviar email de confirmación
+    // ✅ ENVIAR EMAIL DE CONFIRMACIÓN
     try {
       const mockReq = {
         params: { appointmentId: appointment.id }
@@ -376,9 +413,9 @@ router.post('/:businessSlug/appointments', async (req, res) => {
 
       const mockRes = {
         status: (code) => ({
-          json: (data) => console.log(`Email response ${code}:`, data)
+          json: (data) => console.log(`📧 Email response ${code}:`, data)
         }),
-        json: (data) => console.log('Email response:', data)
+        json: (data) => console.log('📧 Email enviado:', data)
       };
 
       await sendConfirmationEmail(mockReq, mockRes);
@@ -403,11 +440,9 @@ router.post('/:businessSlug/appointments', async (req, res) => {
       }
     });
   } catch (error) {
-    console.error('Error creando cita:', error);
+    console.error('❌ Error creando cita:', error);
     res.status(500).json({ error: 'Error al crear la cita' });
   }
 });
-
-
 
 export default router;
