@@ -13,6 +13,8 @@ export async function getBlockedSlots(req, res) {
     const businessId = req.business.id;
     const { startDate, endDate } = req.query;
 
+    console.log('[BlockedSlots] GET - businessId:', businessId);
+
     let query = supabase
       .from('blocked_slots')
       .select('*')
@@ -36,9 +38,10 @@ export async function getBlockedSlots(req, res) {
       throw error;
     }
 
+    console.log('[BlockedSlots] GET - Found:', data?.length || 0);
     res.json({ blockedSlots: data || [] });
   } catch (error) {
-    console.error('Error obteniendo bloqueos:', error);
+    console.error('[BlockedSlots] GET Error:', error);
     res.status(500).json({ error: 'Error al obtener bloqueos' });
   }
 }
@@ -47,7 +50,7 @@ export async function getBlockedSlots(req, res) {
  * Crear un nuevo bloqueo
  * POST /api/blocked-slots
  * Body: {
- *   block_type: 'full_day' | 'time_range' | 'maintenance',
+ *   block_type: 'full_restaurant' | 'time_range' | 'maintenance',
  *   blocked_from: '2025-12-25T00:00:00',
  *   blocked_until: '2025-12-25T23:59:59',
  *   reason: 'Vacaciones de Navidad',
@@ -58,6 +61,8 @@ export async function createBlockedSlot(req, res) {
   try {
     const businessId = req.business.id;
     const userId = req.user.id;
+    const timezone = req.business.timezone || 'Europe/Madrid';
+    
     const { 
       block_type,
       blocked_from, 
@@ -67,46 +72,74 @@ export async function createBlockedSlot(req, res) {
       auto_unblock_at
     } = req.body;
 
+    console.log('[BlockedSlots] POST - Datos recibidos:', {
+      businessId,
+      userId,
+      timezone,
+      block_type,
+      blocked_from,
+      blocked_until,
+      reason
+    });
+
     if (!block_type || !blocked_from || !blocked_until) {
       return res.status(400).json({ 
         error: 'block_type, blocked_from y blocked_until son requeridos' 
       });
     }
 
-    // Validar que blocked_from < blocked_until
-    const fromDate = new Date(blocked_from);
-    const untilDate = new Date(blocked_until);
+    // Convertir de timezone local a UTC
+    const fromDateLocal = new Date(blocked_from);
+    const untilDateLocal = new Date(blocked_until);
+    
+    const fromDateUTC = fromZonedTime(fromDateLocal, timezone);
+    const untilDateUTC = fromZonedTime(untilDateLocal, timezone);
 
-    if (fromDate >= untilDate) {
+    console.log('[BlockedSlots] POST - Conversión de fechas:', {
+      local: { from: blocked_from, until: blocked_until },
+      utc: { from: fromDateUTC.toISOString(), until: untilDateUTC.toISOString() }
+    });
+
+    // Validar que blocked_from < blocked_until
+    if (fromDateUTC >= untilDateUTC) {
       return res.status(400).json({ 
         error: 'blocked_from debe ser anterior a blocked_until' 
       });
     }
 
+    const insertData = {
+      restaurant_id: businessId,
+      table_id: table_id || null,
+      block_type,
+      blocked_from: fromDateUTC.toISOString(),
+      blocked_until: untilDateUTC.toISOString(),
+      auto_unblock_at: auto_unblock_at ? fromZonedTime(new Date(auto_unblock_at), timezone).toISOString() : null,
+      reason: reason?.trim() || null,
+      blocked_by: userId,
+      is_active: true,
+    };
+
+    console.log('[BlockedSlots] POST - Insertando:', insertData);
+
     const { data, error } = await supabase
       .from('blocked_slots')
-      .insert({
-        restaurant_id: businessId,
-        table_id: table_id || null,
-        block_type,
-        blocked_from: fromDate.toISOString(),
-        blocked_until: untilDate.toISOString(),
-        auto_unblock_at: auto_unblock_at ? new Date(auto_unblock_at).toISOString() : null,
-        reason: reason || null,
-        blocked_by: userId,
-        is_active: true,
-      })
+      .insert(insertData)
       .select()
       .single();
 
     if (error) {
+      console.error('[BlockedSlots] POST - Error de Supabase:', error);
       throw error;
     }
 
+    console.log('[BlockedSlots] POST - ✅ Bloqueo creado:', data.id);
     res.status(201).json({ blockedSlot: data });
   } catch (error) {
-    console.error('Error creando bloqueo:', error);
-    res.status(500).json({ error: 'Error al crear bloqueo' });
+    console.error('[BlockedSlots] POST Error:', error);
+    res.status(500).json({ 
+      error: 'Error al crear bloqueo',
+      details: error.message 
+    });
   }
 }
 
@@ -118,6 +151,8 @@ export async function updateBlockedSlot(req, res) {
   try {
     const businessId = req.business.id;
     const { blockId } = req.params;
+    const timezone = req.business.timezone || 'Europe/Madrid';
+    
     const { 
       block_type,
       blocked_from, 
@@ -125,6 +160,8 @@ export async function updateBlockedSlot(req, res) {
       reason,
       is_active
     } = req.body;
+
+    console.log('[BlockedSlots] PATCH - blockId:', blockId);
 
     // Verificar que el bloqueo pertenece al negocio
     const { data: existing, error: checkError } = await supabase
@@ -140,9 +177,18 @@ export async function updateBlockedSlot(req, res) {
 
     const updateData = {};
     if (block_type !== undefined) updateData.block_type = block_type;
-    if (blocked_from !== undefined) updateData.blocked_from = new Date(blocked_from).toISOString();
-    if (blocked_until !== undefined) updateData.blocked_until = new Date(blocked_until).toISOString();
-    if (reason !== undefined) updateData.reason = reason;
+    
+    if (blocked_from !== undefined) {
+      const fromDateLocal = new Date(blocked_from);
+      updateData.blocked_from = fromZonedTime(fromDateLocal, timezone).toISOString();
+    }
+    
+    if (blocked_until !== undefined) {
+      const untilDateLocal = new Date(blocked_until);
+      updateData.blocked_until = fromZonedTime(untilDateLocal, timezone).toISOString();
+    }
+    
+    if (reason !== undefined) updateData.reason = reason?.trim() || null;
     if (is_active !== undefined) updateData.is_active = is_active;
 
     // Validar fechas si se actualizan
@@ -153,6 +199,8 @@ export async function updateBlockedSlot(req, res) {
         });
       }
     }
+
+    console.log('[BlockedSlots] PATCH - Actualizando:', updateData);
 
     const { data, error } = await supabase
       .from('blocked_slots')
@@ -165,9 +213,10 @@ export async function updateBlockedSlot(req, res) {
       throw error;
     }
 
+    console.log('[BlockedSlots] PATCH - ✅ Actualizado');
     res.json({ blockedSlot: data });
   } catch (error) {
-    console.error('Error actualizando bloqueo:', error);
+    console.error('[BlockedSlots] PATCH Error:', error);
     res.status(500).json({ error: 'Error al actualizar bloqueo' });
   }
 }
@@ -180,6 +229,8 @@ export async function deleteBlockedSlot(req, res) {
   try {
     const businessId = req.business.id;
     const { blockId } = req.params;
+
+    console.log('[BlockedSlots] DELETE - blockId:', blockId);
 
     // Verificar que el bloqueo pertenece al negocio
     const { data: existing, error: checkError } = await supabase
@@ -203,9 +254,10 @@ export async function deleteBlockedSlot(req, res) {
       throw error;
     }
 
+    console.log('[BlockedSlots] DELETE - ✅ Eliminado');
     res.json({ success: true, message: 'Bloqueo eliminado' });
   } catch (error) {
-    console.error('Error eliminando bloqueo:', error);
+    console.error('[BlockedSlots] DELETE Error:', error);
     res.status(500).json({ error: 'Error al eliminar bloqueo' });
   }
 }
@@ -250,7 +302,7 @@ export async function checkBlocked(req, res) {
       blocks: blocks || []
     });
   } catch (error) {
-    console.error('Error verificando bloqueo:', error);
+    console.error('[BlockedSlots] CHECK Error:', error);
     res.status(500).json({ error: 'Error al verificar bloqueo' });
   }
 };
