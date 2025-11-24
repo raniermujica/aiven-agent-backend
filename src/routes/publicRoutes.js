@@ -54,12 +54,12 @@ router.get('/:businessSlug/info', async (req, res) => {
     const { businessSlug } = req.params;
 
     // Obtener restaurant por slug
-    const { data: restaurant, error: restaurantError } = await supabase
+       const { data: restaurant, error: restaurantError } = await supabase
       .from('restaurants')
-      .select('id, name, slug, phone, email, address, logo_url, description, business_hours')
+      .select('id, name, slug, phone, email, address, logo_url, description, business_hours, business_type')
       .eq('slug', businessSlug)
       .single();
-
+      
     if (restaurantError || !restaurant) {
       return res.status(404).json({ error: 'Negocio no encontrado' });
     }
