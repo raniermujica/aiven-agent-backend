@@ -59,7 +59,7 @@ router.get('/:businessSlug/info', async (req, res) => {
       .select('id, name, slug, phone, email, address, logo_url, description, business_hours, business_type')
       .eq('slug', businessSlug)
       .single();
-      
+
     if (restaurantError || !restaurant) {
       return res.status(404).json({ error: 'Negocio no encontrado' });
     }
@@ -292,16 +292,17 @@ router.post('/:businessSlug/appointments', async (req, res) => {
       durationMinutes,
       scheduledDate,
       appointmentTime,
-      services, // ✅ Array completo
-      notes
+      services,
+      notes,
+      partySize // ✅ AÑADIR
     } = req.body;
 
-    console.log('📥 Datos recibidos:', { clientName, scheduledDate, appointmentTime, services });
+    console.log('📥 Datos recibidos:', { clientName, scheduledDate, appointmentTime, services, partySize });
 
-    // Obtener restaurant con timezone
+    // Obtener restaurant con timezone y business_type
     const { data: restaurant, error: restaurantError } = await supabase
       .from('restaurants')
-      .select('id, timezone, name, phone, email, address')
+      .select('id, timezone, name, phone, email, address, business_type') // ✅ AÑADIR business_type
       .eq('slug', businessSlug)
       .single();
 
@@ -310,6 +311,7 @@ router.post('/:businessSlug/appointments', async (req, res) => {
     }
 
     const timezone = restaurant.timezone || 'Europe/Madrid';
+    const isRestaurant = restaurant.business_type === 'restaurant';
 
     // ✅ CONVERTIR HORA LOCAL A UTC
     const localDateTimeString = `${scheduledDate}T${appointmentTime}:00`;
@@ -331,7 +333,6 @@ router.post('/:businessSlug/appointments', async (req, res) => {
     if (existingCustomer) {
       customerId = existingCustomer.id;
       
-      // Actualizar email si es nuevo
       if (clientEmail) {
         await supabase
           .from('customers')
@@ -354,12 +355,38 @@ router.post('/:businessSlug/appointments', async (req, res) => {
       customerId = newCustomer.id;
     }
 
-    // ✅ PREPARAR LISTA DE SERVICIOS
     const servicesList = services && services.length > 0
       ? services
       : [{ id: serviceId, name: serviceName, duration_minutes: durationMinutes }];
 
     console.log('📋 Servicios a guardar:', servicesList);
+
+    // ✅ ASIGNACIÓN DE MESA (SOLO RESTAURANTES)
+    let assignedTableId = null;
+    let assignmentReason = null;
+
+    if (isRestaurant && partySize) {
+      console.log('🍽️ Iniciando asignación de mesa...');
+      
+      const { tableAssignmentEngine } = await import('../services/restaurant/tableAssignmentEngine.js');
+
+      const assignmentResult = await tableAssignmentEngine.findBestTable({
+        restaurantId: restaurant.id,
+        date: scheduledDate,
+        time: appointmentTime,
+        partySize: parseInt(partySize),
+        duration: durationMinutes || 90,
+        preference: null
+      });
+
+      if (assignmentResult.success) {
+        assignedTableId = assignmentResult.table.id;
+        assignmentReason = assignmentResult.reason;
+        console.log(`✅ Mesa asignada: ${assignmentResult.table.table_number}`);
+      } else {
+        console.warn('⚠️ No se pudo asignar mesa:', assignmentResult.message);
+      }
+    }
 
     // Crear cita
     const { data: appointment, error: appointmentError } = await supabase
@@ -367,16 +394,19 @@ router.post('/:businessSlug/appointments', async (req, res) => {
       .insert({
         restaurant_id: restaurant.id,
         customer_id: customerId,
+        table_id: assignedTableId, // ✅ AÑADIR
         service_id: servicesList[0].id || serviceId,
         service_name: servicesList[0].name || serviceName,
         duration_minutes: durationMinutes,
         scheduled_date: scheduledDate,
-        appointment_time: appointmentDateTimeUTC.toISOString(), // ✅ UTC
+        appointment_time: appointmentDateTimeUTC.toISOString(),
         client_name: clientName,
         client_phone: clientPhone,
         client_email: clientEmail,
         status: 'confirmado',
         notes: notes ? `${notes}\n\n[Agendado desde enlace público]` : '[Agendado desde enlace público]',
+        party_size: isRestaurant ? parseInt(partySize) : null, // ✅ AÑADIR
+        source: 'public_link' // ✅ AÑADIR
       })
       .select('*')
       .single();
@@ -384,6 +414,17 @@ router.post('/:businessSlug/appointments', async (req, res) => {
     if (appointmentError) throw appointmentError;
 
     console.log('✅ Cita creada:', appointment.id);
+
+    // ✅ CREAR REGISTRO DE ASIGNACIÓN DE MESA
+    if (assignedTableId && isRestaurant) {
+      await supabase.from('table_assignments').insert({
+        appointment_id: appointment.id,
+        table_id: assignedTableId,
+        assigned_by: null, // Sistema automático
+        assignment_type: 'automatic',
+      });
+      console.log('✅ Table assignment creado');
+    }
 
     // ✅ INSERTAR TODOS LOS SERVICIOS
     const appointmentServicesData = servicesList.map((service, index) => ({
@@ -437,6 +478,8 @@ router.post('/:businessSlug/appointments', async (req, res) => {
         date: appointment.scheduled_date,
         time: appointmentTime,
         status: appointment.status,
+        party_size: appointment.party_size,
+        table_id: assignedTableId
       }
     });
   } catch (error) {

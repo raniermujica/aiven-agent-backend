@@ -8,7 +8,7 @@ import { supabase } from '../config/database.js';
 export async function sendConfirmationEmail(req, res) {
   try {
     const { appointmentId } = req.params;
-     console.log(`[Email] Enviando confirmación para cita: ${appointmentId}`);
+    console.log(`[Email] Enviando confirmación para cita: ${appointmentId}`);
 
     // Obtener datos de la cita con servicios
     const { data: appointment, error } = await supabase
@@ -55,14 +55,15 @@ export async function sendConfirmationEmail(req, res) {
     });
 
     // Formatear datos para el email
+    // Formatear datos para el email
     const emailData = {
       customer_email: appointment.customers.email,
       customer_name: appointment.customers.name,
       appointment_date: appointment.scheduled_date,
       appointment_time: timeString,
       services: appointment.appointment_services.map(as => ({
-        name: as.services.name,
-        duration_minutes: as.services.duration_minutes
+        name: as.service_name || as.services?.name || 'Servicio', 
+        duration_minutes: as.duration_minutes || as.services?.duration_minutes || 60 
       })),
       business_name: appointment.restaurants.name,
       business_phone: appointment.restaurants.phone,
@@ -72,7 +73,7 @@ export async function sendConfirmationEmail(req, res) {
       appointment_id: appointment.id
     };
 
-     console.log('[EmailService] 📧 Datos del email:', JSON.stringify(emailData, null, 2));
+    console.log('[EmailService] 📧 Datos del email:', JSON.stringify(emailData, null, 2));
 
     // Enviar email
     await emailService.sendAppointmentConfirmation(emailData);
