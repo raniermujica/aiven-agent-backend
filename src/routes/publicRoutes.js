@@ -280,6 +280,7 @@ router.post('/:businessSlug/check-availability', async (req, res) => {
 });
 
 // POST /api/public/:businessSlug/appointments
+// POST /api/public/:businessSlug/appointments
 router.post('/:businessSlug/appointments', async (req, res) => {
   try {
     const { businessSlug } = req.params;
@@ -294,7 +295,7 @@ router.post('/:businessSlug/appointments', async (req, res) => {
       appointmentTime,
       services,
       notes,
-      partySize // ✅ AÑADIR
+      partySize
     } = req.body;
 
     console.log('📥 Datos recibidos:', { clientName, scheduledDate, appointmentTime, services, partySize });
@@ -302,7 +303,7 @@ router.post('/:businessSlug/appointments', async (req, res) => {
     // Obtener restaurant con timezone y business_type
     const { data: restaurant, error: restaurantError } = await supabase
       .from('restaurants')
-      .select('id, timezone, name, phone, email, address, business_type') // ✅ AÑADIR business_type
+      .select('id, timezone, name, phone, email, address, business_type')
       .eq('slug', businessSlug)
       .single();
 
@@ -310,8 +311,15 @@ router.post('/:businessSlug/appointments', async (req, res) => {
       return res.status(404).json({ error: 'Negocio no encontrado' });
     }
 
+    const restaurantId = restaurant.id;  // ✅ DEFINIR AQUÍ
     const timezone = restaurant.timezone || 'Europe/Madrid';
     const isRestaurant = restaurant.business_type === 'restaurant';
+
+    console.log('🔍 Datos del negocio:', {
+      restaurantId,
+      isRestaurant,
+      timezone
+    });
 
     // ✅ CONVERTIR HORA LOCAL A UTC
     const localDateTimeString = `${scheduledDate}T${appointmentTime}:00`;
@@ -327,7 +335,7 @@ router.post('/:businessSlug/appointments', async (req, res) => {
       .from('customers')
       .select('id')
       .eq('phone', clientPhone)
-      .eq('restaurant_id', restaurant.id)
+      .eq('restaurant_id', restaurantId)  // ✅ Usar restaurantId
       .single();
 
     if (existingCustomer) {
@@ -343,7 +351,7 @@ router.post('/:businessSlug/appointments', async (req, res) => {
       const { data: newCustomer, error: customerError } = await supabase
         .from('customers')
         .insert({
-          restaurant_id: restaurant.id,
+          restaurant_id: restaurantId,  // ✅ Usar restaurantId
           name: clientName,
           phone: clientPhone,
           email: clientEmail,
@@ -359,62 +367,84 @@ router.post('/:businessSlug/appointments', async (req, res) => {
       ? services
       : [{ id: serviceId, name: serviceName, duration_minutes: durationMinutes }];
 
+    const totalDuration = servicesList.reduce((sum, s) => sum + (s.duration_minutes || 60), 0);
+
     console.log('📋 Servicios a guardar:', servicesList);
+    console.log('📋 Duración total:', totalDuration);
 
     // ✅ ASIGNACIÓN DE MESA (SOLO RESTAURANTES)
     let assignedTableId = null;
     let assignmentReason = null;
 
-    if (isRestaurant && partySize) {
-      console.log('🍽️ Iniciando asignación de mesa...');
-      console.log('🍽️ partySize recibido:', partySize, 'tipo:', typeof partySize);
+    console.log('🔍 Verificación asignación:');
+    console.log('  - isRestaurant:', isRestaurant);
+    console.log('  - partySize:', partySize);
+    console.log('  - Tipo partySize:', typeof partySize);
 
+    if (isRestaurant && partySize) {
+      console.log('✅ Entrando a bloque de asignación...');
+      
       const finalPartySize = parseInt(partySize, 10);
+      console.log('🍽️ partySize parseado:', finalPartySize);
 
       if (isNaN(finalPartySize) || finalPartySize < 1) {
         console.error('❌ partySize inválido:', partySize);
       } else {
-        const { tableAssignmentEngine } = await import('../services/restaurant/tableAssignmentEngine.js');
+        try {
+          console.log('🍽️ Importando tableAssignmentEngine...');
+          const { tableAssignmentEngine } = await import('../services/restaurant/tableAssignmentEngine.js');
+          console.log('✅ tableAssignmentEngine importado');
 
-        console.log('🍽️ Buscando mesa para:', {
-          restaurantId: restaurant.id,
-          date: scheduledDate,
-          time: appointmentTime,
-          partySize: finalPartySize,
-          duration: durationMinutes || 90
-        });
+          console.log('🍽️ Llamando findBestTable con:', {
+            restaurantId,
+            date: scheduledDate,
+            time: appointmentTime,
+            partySize: finalPartySize,
+            duration: totalDuration,
+            preference: null
+          });
 
-        const assignmentResult = await tableAssignmentEngine.findBestTable({
-          restaurantId: restaurant.id,
-          date: scheduledDate,
-          time: appointmentTime,
-          partySize: finalPartySize,
-          duration: durationMinutes || 90,
-          preference: null
-        });
+          const assignmentResult = await tableAssignmentEngine.findBestTable({
+            restaurantId,  // ✅ CAMBIO CRÍTICO
+            date: scheduledDate,
+            time: appointmentTime,
+            partySize: finalPartySize,
+            duration: totalDuration,  // ✅ Usar totalDuration
+            preference: null
+          });
 
-        console.log('🍽️ Resultado de asignación:', assignmentResult);
+          console.log('🍽️ Resultado completo:', JSON.stringify(assignmentResult, null, 2));
 
-        if (assignmentResult.success) {
-          assignedTableId = assignmentResult.table.id;
-          assignmentReason = assignmentResult.reason;
-          console.log(`✅ Mesa asignada: ${assignmentResult.table.table_number} (ID: ${assignedTableId})`);
-        } else {
-          console.warn('⚠️ No se pudo asignar mesa:', assignmentResult.message);
+          if (assignmentResult.success) {
+            assignedTableId = assignmentResult.table.id;
+            assignmentReason = assignmentResult.reason;
+            console.log(`✅ Mesa asignada exitosamente: ${assignmentResult.table.table_number} (ID: ${assignedTableId})`);
+          } else {
+            console.warn('⚠️ No se pudo asignar mesa:', assignmentResult.message);
+          }
+        } catch (engineError) {
+          console.error('❌ ERROR en tableAssignmentEngine:', engineError);
+          console.error('❌ Stack:', engineError.stack);
         }
       }
+    } else {
+      console.log('❌ NO entrando a asignación porque:');
+      console.log('  - isRestaurant:', isRestaurant);
+      console.log('  - partySize:', partySize);
     }
+
+    console.log('📍 assignedTableId final antes de crear cita:', assignedTableId);
 
     // Crear cita
     const { data: appointment, error: appointmentError } = await supabase
       .from('appointments')
       .insert({
-        restaurant_id: restaurant.id,
+        restaurant_id: restaurantId,  // ✅ Usar restaurantId
         customer_id: customerId,
         table_id: assignedTableId,
         service_id: servicesList[0].id || serviceId,
         service_name: servicesList[0].name || serviceName,
-        duration_minutes: durationMinutes,
+        duration_minutes: totalDuration,  // ✅ Usar totalDuration
         scheduled_date: scheduledDate,
         appointment_time: appointmentDateTimeUTC.toISOString(),
         client_name: clientName,
@@ -431,19 +461,27 @@ router.post('/:businessSlug/appointments', async (req, res) => {
     if (appointmentError) throw appointmentError;
 
     console.log('✅ Cita creada:', appointment.id);
+    console.log('✅ Con table_id:', appointment.table_id);
 
     // ✅ CREAR REGISTRO DE ASIGNACIÓN DE MESA
     if (assignedTableId && isRestaurant) {
-      await supabase.from('table_assignments').insert({
-        appointment_id: appointment.id,
-        table_id: assignedTableId,
-        assigned_by: null, // Sistema automático
-        assignment_type: 'automatic',
-      });
-      console.log('✅ Table assignment creado');
+      const { error: assignmentError } = await supabase
+        .from('table_assignments')
+        .insert({
+          appointment_id: appointment.id,
+          table_id: assignedTableId,
+          assigned_by: null,
+          assignment_type: 'automatic',
+        });
+
+      if (assignmentError) {
+        console.error('❌ Error creando table_assignment:', assignmentError);
+      } else {
+        console.log('✅ Table assignment creado correctamente');
+      }
     }
 
-    // ✅ INSERTAR TODOS LOS SERVICIOS
+    // ✅ INSERTAR SERVICIOS
     const appointmentServicesData = servicesList.map((service, index) => ({
       appointment_id: appointment.id,
       service_id: service.id || null,
@@ -463,16 +501,11 @@ router.post('/:businessSlug/appointments', async (req, res) => {
       console.log(`✅ ${appointmentServicesData.length} servicio(s) guardado(s)`);
     }
 
-    // ✅ ENVIAR EMAIL DE CONFIRMACIÓN
+    // ✅ ENVIAR EMAIL
     try {
-      const mockReq = {
-        params: { appointmentId: appointment.id }
-      };
-
+      const mockReq = { params: { appointmentId: appointment.id } };
       const mockRes = {
-        status: (code) => ({
-          json: (data) => console.log(`📧 Email response ${code}:`, data)
-        }),
+        status: (code) => ({ json: (data) => console.log(`📧 Email response ${code}:`, data) }),
         json: (data) => console.log('📧 Email enviado:', data)
       };
 
